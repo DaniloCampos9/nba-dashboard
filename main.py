@@ -7,12 +7,15 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 # =====================================================================
 original_get = requests.get
 
+# =====================================================================
+# BLINDAGEM ANTI-BLOQUEIO MAXIMIZADA
+# =====================================================================
+original_get = requests.get
+
 def get_disfarcado(*args, **kwargs):
-    """Injeta cabeçalhos de navegador real e aumenta o timeout para a NBA não bloquear o script."""
-    # Aumenta a paciência do robô para 60 segundos (o padrão era 30)
-    kwargs.setdefault('timeout', 60)
+    """Injeta cabeçalhos e FORÇA o timeout ignorando o padrão da nba_api"""
+    kwargs['timeout'] = 90  # Força 90 segundos sem aceitar desculpas
     
-    # Cria o disfarce de usuário comum
     headers = kwargs.get('headers', {})
     headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -25,7 +28,6 @@ def get_disfarcado(*args, **kwargs):
     kwargs['headers'] = headers
     return original_get(*args, **kwargs)
 
-# Substitui globalmente a função do Python pela nossa função disfarçada
 requests.get = get_disfarcado
 # =====================================================================
 

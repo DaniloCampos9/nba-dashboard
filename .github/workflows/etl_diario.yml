@@ -2,13 +2,12 @@ name: Atualizacao Diaria NBA
 
 on:
   schedule:
-    # Roda todos os dias às 09:00 UTC (06:00 da manhã no BR) para garantir que os jogos da noite anterior fecharam
     - cron: '0 9 * * *'
-  workflow_dispatch: # Permite rodar manualmente clicando em um botão
+  workflow_dispatch:
 
 jobs:
   rodar-pipeline:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest # <--- O TRUQUE ESTÁ AQUI
 
     steps:
       - name: Baixar o código do repositório

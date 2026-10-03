@@ -45,7 +45,11 @@ def obter_estatisticas_resumo(jogador_id, temporada, tipo="Regular Season"):
             stats['ts_pct'] = df['ts_pct'].mean()
             stats['usg_pct'] = df['usg_pct'].mean()
             stats['net_rating'] = df['net_rating'].mean()
+            stats['off_rating'] = df['off_rating'].mean()
+            stats['def_rating'] = df['def_rating'].mean()
             stats['pie'] = df['pie'].mean()
+            stats['ast_pct'] = df['ast_pct'].mean()
+            stats['pace'] = df['pace'].mean()
         return stats
     except Exception: return {}
     
@@ -139,7 +143,6 @@ def obter_dados_times(temporada, tipo="Regular Season"):
 @st.cache_data(ttl=3600)
 def obter_mapa_arremessos_jogador(jogador_id, temporada, tipo_temporada="Regular Season"):
     from nba_api.stats.endpoints import shotchartdetail
-    import pandas as pd
     try:
         def buscar_por_tipo(tipo_nba):
             return shotchartdetail.ShotChartDetail(
@@ -151,18 +154,15 @@ def obter_mapa_arremessos_jogador(jogador_id, temporada, tipo_temporada="Regular
             return pd.concat([buscar_por_tipo("Regular Season"), buscar_por_tipo("Playoffs")], ignore_index=True)
         return buscar_por_tipo(tipo_temporada)
     except Exception: return pd.DataFrame()
-    
-    
-@st.cache_data(ttl=86400) # Cache de 24h pois histórico passado não muda
+
+@st.cache_data(ttl=86400)
 def obter_timeline_carreira(jogador_id):
-    """Busca a carreira INTEIRA do jogador (todos os anos e times) direto da API da NBA."""
+    """Busca a carreira INTEIRA do jogador direto da API da NBA."""
     from nba_api.stats.endpoints import playercareerstats
-    import pandas as pd
-    
     try:
         carreira = playercareerstats.PlayerCareerStats(player_id=jogador_id)
-        df_reg = carreira.get_data_frames()[0] # Temporada Regular
-        df_play = carreira.get_data_frames()[2] # Playoffs
+        df_reg = carreira.get_data_frames()[0]
+        df_play = carreira.get_data_frames()[2]
         return df_reg, df_play
-    except Exception as e:
+    except Exception:
         return pd.DataFrame(), pd.DataFrame()

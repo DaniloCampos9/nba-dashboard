@@ -1,59 +1,44 @@
 import time
-import requests
+from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_fixed
+from extrator import extrair_dados_defesa, extrair_dados_times
+from transformador import carregar_defesa_supabase, carregar_times_supabase
 
-# =====================================================================
-# BLINDAGEM ANTI-BLOQUEIO (Disfarce de Navegador para o GitHub Actions)
-# =====================================================================
-original_get = requests.get
-
-# =====================================================================
-# BLINDAGEM ANTI-BLOQUEIO MAXIMIZADA
-# =====================================================================
-original_get = requests.get
-
-def get_disfarcado(*args, **kwargs):
-    """Injeta cabeçalhos e FORÇA o timeout ignorando o padrão da nba_api"""
-    kwargs['timeout'] = 90  # Força 90 segundos sem aceitar desculpas
-    
-    headers = kwargs.get('headers', {})
-    headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.nba.com/',
-        'Origin': 'https://www.nba.com/',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Connection': 'keep-alive',
-    })
-    kwargs['headers'] = headers
-    return original_get(*args, **kwargs)
-
-requests.get = get_disfarcado
-# =====================================================================
+# Carrega as senhas do arquivo .env ANTES de importar o banco
+load_dotenv()
 
 from nba_api.stats.endpoints import commonallplayers
+
+# --- IMPORTS DO EXTRATOR ---
 from extrator import (
     buscar_dados_brutos_jogador, 
     buscar_estatisticas_carreira, 
     buscar_estatisticas_avancadas_liga, 
     buscar_estatisticas_hustle_liga, 
-    buscar_estatisticas_clutch_liga
+    buscar_estatisticas_clutch_liga,
+    extrair_dados_defesa  # Nossa nova função!
 )
+
+# --- IMPORTS DO TRANSFORMADOR ---
 from transformador import (
     limpar_dados_jogador, 
     limpar_estatisticas_carreira, 
     limpar_estatisticas_avancadas, 
     limpar_estatisticas_hustle, 
     limpar_estatisticas_clutch,
-    criar_perfil_basico_liga
+    criar_perfil_basico_liga,
+    carregar_defesa_supabase  # Nossa nova função!
 )
+
+# --- IMPORTS DO CARREGADOR ---
 from carregador import (
     enviar_para_banco, 
     enviar_estatisticas_para_banco, 
     enviar_stats_avancadas, 
     enviar_stats_hustle, 
     enviar_stats_clutch,
-    limpar_dados_temporada_atual
+    limpar_dados_temporada_atual,
+    supabase # Puxando a conexão do banco para enviar pra função de defesa
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
@@ -65,8 +50,12 @@ def obter_ids_jogadores_ativos():
     print(f"Total de {len(ids)} jogadores encontrados.\n")
     return ids
 
+
+# =======================================================
+# ROTINA 1: ATUALIZAÇÃO DIÁRIA (A QUE VAMOS DEIXAR LIGADA)
+# =======================================================
 def executar_atualizacao_diaria(temporada_atual="2026-27"):
-    """Rotina ultrarrápida otimizada para rodar diariamente via GitHub Actions."""
+    """Rotina ultrarrápida otimizada para rodar diariamente no PC."""
     print(f"--- INICIANDO ATUALIZAÇÃO DIÁRIA DA NBA ({temporada_atual}) ---")
     
     ids_jogadores = obter_ids_jogadores_ativos()
@@ -95,10 +84,110 @@ def executar_atualizacao_diaria(temporada_atual="2026-27"):
         if filtrada_hustle: enviar_stats_hustle(filtrada_hustle)
         if filtrada_clutch: enviar_stats_clutch(filtrada_clutch)
         
+        # 👉 Defesa incluída na rotina diária
+        df_defesa = extrair_dados_defesa(temporada_atual)
+        if not df_defesa.empty:
+            df_defesa = df_defesa[df_defesa['PLAYER_ID'].isin(ids_jogadores)]
+            carregar_defesa_supabase(df_defesa, supabase)
+            
         print("\n--- ATUALIZAÇÃO DIÁRIA CONCLUÍDA COM SUCESSO! ---")
         
     except Exception as e:
         print(f"[ERRO FATAL NA ATUALIZAÇÃO DIÁRIA]: {e}")
 
+
+# =======================================================
+# ROTINA 2: CARGA HISTÓRICA COMPLETA (GUARDADA PARA USO FUTURO)
+# =======================================================
+def executar_carga_historica(lista_temporadas):
+    """Loop que roda o ETL completo para todas as temporadas passadas."""
+    print(f"--- INICIANDO CARGA HISTÓRICA ({len(lista_temporadas)} temporadas) ---")
+    ids_jogadores = obter_ids_jogadores_ativos()
+    
+    for temporada in lista_temporadas:
+        print(f"\n=========================================================")
+        print(f" PROCESSANDO TEMPORADA: {temporada}")
+        print(f"=========================================================")
+        
+        limpar_dados_temporada_atual(temporada)
+        
+        try:
+            bruto_adv, _ = buscar_estatisticas_avancadas_liga(temporada)
+            perfil_basico = criar_perfil_basico_liga(bruto_adv, temporada)
+            if perfil_basico: enviar_para_banco(perfil_basico)
+
+            limpa_adv = limpar_estatisticas_avancadas(bruto_adv, temporada)
+            filtrada_adv = [s for s in limpa_adv if s["jogador_id"] in ids_jogadores]
+            
+            bruto_hustle, _ = buscar_estatisticas_hustle_liga(temporada)
+            limpa_hustle = limpar_estatisticas_hustle(bruto_hustle, temporada)
+            filtrada_hustle = [s for s in limpa_hustle if s["jogador_id"] in ids_jogadores]
+            
+            bruto_clutch, _ = buscar_estatisticas_clutch_liga(temporada)
+            limpa_clutch = limpar_estatisticas_clutch(bruto_clutch, temporada)
+            filtrada_clutch = [s for s in limpa_clutch if s["jogador_id"] in ids_jogadores]
+            
+            if filtrada_adv: enviar_stats_avancadas(filtrada_adv)
+            if filtrada_hustle: enviar_stats_hustle(filtrada_hustle)
+            if filtrada_clutch: enviar_stats_clutch(filtrada_clutch)
+            
+            df_defesa = extrair_dados_defesa(temporada)
+            if not df_defesa.empty:
+                df_defesa = df_defesa[df_defesa['PLAYER_ID'].isin(ids_jogadores)]
+                carregar_defesa_supabase(df_defesa, supabase)
+                
+        except Exception as e:
+            print(f"[ERRO FATAL NA TEMPORADA {temporada}]: {e}")
+            
+        time.sleep(3)
+    print("\n--- CARGA HISTÓRICA CONCLUÍDA COM SUCESSO! ---")
+
+
+# =======================================================
+# ROTINA 3: CARGA APENAS DE DEFESA (GUARDADA PARA USO FUTURO)
+# =======================================================
+def executar_carga_apenas_defesa(lista_temporadas):
+    """Loop focado APENAS em puxar os dados de Defesa."""
+    print(f"--- INICIANDO CARGA EXCLUSIVA DE DEFESA ({len(lista_temporadas)} temporadas) ---")
+    ids_jogadores = obter_ids_jogadores_ativos()
+    
+    for temporada in lista_temporadas:
+        try:
+            df_defesa = extrair_dados_defesa(temporada)
+            if not df_defesa.empty:
+                df_defesa = df_defesa[df_defesa['PLAYER_ID'].isin(ids_jogadores)]
+                carregar_defesa_supabase(df_defesa, supabase)
+        except Exception as e:
+            print(f"[ERRO NA TEMPORADA {temporada}]: {e}")
+        time.sleep(3)
+
+def executar_carga_apenas_times(lista_temporadas):
+    """Loop focado APENAS em puxar os dados dos Times."""
+    print(f"--- INICIANDO CARGA EXCLUSIVA DE TIMES ({len(lista_temporadas)} temporadas) ---")
+    
+    for temporada in lista_temporadas:
+        print(f"\n=========================================================")
+        print(f" PUXANDO TIMES: {temporada}")
+        print(f"=========================================================")
+        
+        try:
+            df_times = extrair_dados_times(temporada)
+            if not df_times.empty:
+                carregar_times_supabase(df_times, supabase)
+            else:
+                print("Nenhum dado de time retornado.")
+                
+        except Exception as e:
+            print(f"[ERRO NA TEMPORADA {temporada}]: {e}")
+            
+        time.sleep(3)
+        
+    print("\n--- CARGA DE TIMES CONCLUÍDA COM SUCESSO! ---")
+
+# =======================================================
+# EXECUÇÃO PRINCIPAL
+# =======================================================
 if __name__ == "__main__":
-    executar_atualizacao_diaria("2026-27")
+    temporadas = ["2026-27", "2025-26", "2024-25", "2023-24", "2022-23"]
+    # Comente a carga diária e rode apenas a dos times:
+    executar_carga_apenas_times(temporadas)

@@ -125,3 +125,55 @@ def criar_perfil_basico_liga(dados_brutos, temporada):
             })
             
     return perfis_basicos
+
+def carregar_defesa_supabase(df_defesa, cliente_supabase):
+    """Formata e envia os dados de defesa cruzados para a nova tabela no Supabase."""
+    print("Iniciando carga de dados defensivos...")
+    
+    registros_sucesso = 0
+    
+    for _, linha in df_defesa.iterrows():
+        dados = {
+            "jogador_id": int(linha['PLAYER_ID']),
+            "temporada": linha['temporada'],
+            "roubos_totais": int(linha['STL']),
+            "tocos_totais": int(linha['BLK']),
+            "deflections": int(linha['DEFLECTIONS'])
+        }
+        
+        try:
+            # Envia para a nova tabela que você criou
+            cliente_supabase.table("stats_defesa").insert(dados).execute()
+            registros_sucesso += 1
+        except Exception as e:
+            print(f"Erro ao inserir dados do jogador {linha['PLAYER_ID']}: {e}")
+            
+    print(f"Carga concluída! {registros_sucesso} registros de defesa inseridos no Supabase.")
+
+# 👇 FUNÇÃO CORRIGIDA - Alinhada corretamente na margem esquerda
+def carregar_times_supabase(df_times, cliente_supabase):
+    """Formata e envia os dados dos times para a nova tabela no Supabase."""
+    print("Iniciando carga de dados dos times...")
+    registros_sucesso = 0
+    
+    for _, linha in df_times.iterrows():
+        dados = {
+            "time_id": int(linha['TEAM_ID']),
+            "nome_time": str(linha['TEAM_NAME']),
+            "temporada": str(linha['temporada']),
+            "jogos": int(linha['GP']),
+            "vitorias": int(linha['W']),
+            "derrotas": int(linha['L']),
+            "off_rating": float(linha['OFF_RATING']),
+            "def_rating": float(linha['DEF_RATING']),
+            "net_rating": float(linha['NET_RATING']),
+            "pace": float(linha['PACE'])
+        }
+        
+        try:
+            cliente_supabase.table("stats_times").insert(dados).execute()
+            registros_sucesso += 1
+        except Exception as e:
+            print(f"Erro ao inserir dados do time {linha['TEAM_NAME']}: {e}")
+            
+    print(f"Carga concluída! {registros_sucesso} times inseridos no Supabase.")

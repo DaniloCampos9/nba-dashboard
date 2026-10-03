@@ -1,0 +1,9 @@
+[theme]
+primaryColor = "#1D428A" # Azul NBA
+backgroundColor = "#0E1117" # Fundo escuro moderno
+secondaryBackgroundColor = "#1E2127" # Cards mais destacados
+textColor = "#FAFAFA"
+font = "sans serif"
+
+[client]
+showErrorDetails = false # Esconde erros feios do usuário final

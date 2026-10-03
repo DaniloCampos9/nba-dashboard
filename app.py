@@ -12,42 +12,37 @@ st.set_page_config(
 # 2. Configuração dos Filtros Globais na Sidebar
 st.sidebar.title("⚙️ Filtros da Análise")
 
-# 👉 Liberando as 5 temporadas disponíveis no banco!
 temporadas_disponiveis = ["2026-27", "2025-26", "2024-25", "2023-24", "2022-23"]
 temporada = st.sidebar.selectbox("Temporada", temporadas_disponiveis, index=0)
-tipo_temporada = st.sidebar.radio("Tipo de Temporada", ["Regular Season", "Playoffs"])
+tipo_temporada = st.sidebar.radio("Tipo de Temporada", ["Regular Season", "Playoffs", "Regular Season + Playoffs"])
 
 st.sidebar.divider()
 st.sidebar.markdown("### Contexto do Jogador")
 
-# A MÁGICA ACONTECE AQUI: Puxando do Supabase
+# A MÁGICA ACONTECE AQUI: Adicionamos um placeholder inicial para o usuário escolher o jogador
 lista_jogadores = obter_lista_jogadores()
-jogador_selecionado = st.sidebar.selectbox("Jogador", lista_jogadores)
-
-minimo_minutos = st.sidebar.slider(
-    "Mínimo de Minutos", 
-    min_value=0, max_value=2000, value=100, step=50,
-    help="Define quantos minutos um jogador precisa ter disputado para aparecer na análise. Isso ajuda a evitar amostras extremamente pequenas."
-)
+opcoes_jogadores = ["Selecione um jogador..."] + lista_jogadores
+jogador_selecionado = st.sidebar.selectbox("Jogador", opcoes_jogadores)
 
 # Salvar filtros na sessão para as outras páginas lerem
 st.session_state['filtro_temporada'] = temporada
 st.session_state['filtro_tipo_temporada'] = tipo_temporada
 st.session_state['filtro_jogador'] = jogador_selecionado
-st.session_state['filtro_min_minutos'] = minimo_minutos
 
-# 3. Roteamento de Páginas
+# 3. Roteamento de Páginas (Home configurada como padrão)
 pages = {
+    "Início": [
+        st.Page("pages/0_home.py", title="Home / Bem-vindo", icon="🏠", default=True),
+    ],
     "Dashboard": [
-        st.Page("pages/1_overview.py", title="Overview", icon="📊", default=True),
+        st.Page("pages/1_overview.py", title="Overview", icon="📊"),
         st.Page("pages/2_offense.py", title="Offensive Profile", icon="🎯"),
-        st.Page("pages/3_defense.py", title="Defensive Profile", icon="🛡️"),
+        st.Page("pages/7_shot_chart.py", title="Shot Charts", icon="🗺️"), 
+        st.Page("pages/3_defense.py", title="Defensive Profile", icon="🛡"),
         st.Page("pages/4_impact.py", title="Impact & Efficiency", icon="⚡"),
-        # (Se você tiver a página 5 de comparação, deixe ela aqui)
         st.Page("pages/6_teams.py", title="Team Analytics", icon="🏀"),
     ],
     "Ferramentas": [
-        # 👉 Nossa nova página de Comparação
         st.Page("pages/5_comparison.py", title="Player Comparison", icon="⚔️")
     ],
     "Metodologia": [

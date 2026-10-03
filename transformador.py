@@ -1,6 +1,5 @@
 def converter_para_inteiro(valor):
-    if valor is None:
-        return None
+    if valor is None: return None
     return int(float(valor))
 
 def limpar_dados_jogador(dados_brutos):
@@ -8,7 +7,6 @@ def limpar_dados_jogador(dados_brutos):
     headers = bloco_principal['headers']
     valores = bloco_principal['rowSet'][0]
     jogador_completo = dict(zip(headers, valores))
-    
     return {
         "id": jogador_completo.get("PERSON_ID"),
         "nome_completo": jogador_completo.get("DISPLAY_FIRST_LAST"),
@@ -22,36 +20,40 @@ def limpar_dados_jogador(dados_brutos):
         "ano_draft": jogador_completo.get("DRAFT_YEAR")
     }
 
-def limpar_estatisticas_carreira(dados_brutos):
-    bloco_temporadas = dados_brutos['resultSets'][0]
-    headers = bloco_temporadas['headers']
-    linhas = bloco_temporadas['rowSet']
-    lista_temporadas = []
-    
-    for linha in linhas:
-        temporada = dict(zip(headers, linha))
-        lista_temporadas.append({
-            "jogador_id": temporada.get("PLAYER_ID"),
-            "temporada": temporada.get("SEASON_ID"),
-            "time_abrev": temporada.get("TEAM_ABBREVIATION"),
-            "idade": converter_para_inteiro(temporada.get("PLAYER_AGE")),
-            "jogos_disputados": converter_para_inteiro(temporada.get("GP")),
-            "pontos_totais": converter_para_inteiro(temporada.get("PTS")),
-            "assistencias_totais": converter_para_inteiro(temporada.get("AST")),
-            "rebotes_totais": converter_para_inteiro(temporada.get("REB"))
-        })
-    return lista_temporadas
+def limpar_estatisticas_carreira(dados_brutos, tipo="Regular Season"):
+    indice_bloco = 0 if tipo == "Regular Season" else 2
+    try:
+        bloco_temporadas = dados_brutos['resultSets'][indice_bloco]
+        headers = bloco_temporadas['headers']
+        linhas = bloco_temporadas['rowSet']
+        lista_temporadas = []
+        for linha in linhas:
+            temporada = dict(zip(headers, linha))
+            lista_temporadas.append({
+                "jogador_id": temporada.get("PLAYER_ID"),
+                "temporada": temporada.get("SEASON_ID"),
+                "tipo_temporada": tipo,
+                "time_abrev": temporada.get("TEAM_ABBREVIATION"),
+                "idade": converter_para_inteiro(temporada.get("PLAYER_AGE")),
+                "jogos_disputados": converter_para_inteiro(temporada.get("GP")),
+                "pontos_totais": converter_para_inteiro(temporada.get("PTS")),
+                "assistencias_totais": converter_para_inteiro(temporada.get("AST")),
+                "rebotes_totais": converter_para_inteiro(temporada.get("REB"))
+            })
+        return lista_temporadas
+    except:
+        return []
 
-def limpar_estatisticas_avancadas(dados_brutos, temporada):
+def limpar_estatisticas_avancadas(dados_brutos, temporada, tipo="Regular Season"):
     headers = dados_brutos['resultSets'][0]['headers']
     linhas = dados_brutos['resultSets'][0]['rowSet']
     lista_avancada = []
-    
     for linha in linhas:
         jogador = dict(zip(headers, linha))
         lista_avancada.append({
             "jogador_id": jogador.get("PLAYER_ID"),
             "temporada": temporada,
+            "tipo_temporada": tipo,
             "ts_pct": jogador.get("TS_PCT"),
             "efg_pct": jogador.get("EFG_PCT"),
             "off_rating": jogador.get("OFF_RATING"),
@@ -65,16 +67,16 @@ def limpar_estatisticas_avancadas(dados_brutos, temporada):
         })
     return lista_avancada
 
-def limpar_estatisticas_hustle(dados_brutos, temporada):
+def limpar_estatisticas_hustle(dados_brutos, temporada, tipo="Regular Season"):
     headers = dados_brutos['resultSets'][0]['headers']
     linhas = dados_brutos['resultSets'][0]['rowSet']
     lista_hustle = []
-    
     for linha in linhas:
         jogador = dict(zip(headers, linha))
         lista_hustle.append({
             "jogador_id": jogador.get("PLAYER_ID"),
             "temporada": temporada,
+            "tipo_temporada": tipo,
             "deflections": jogador.get("DEFLECTIONS"),
             "charges_drawn": jogador.get("CHARGES_DRAWN"),
             "contested_shots": jogador.get("CONTESTED_SHOTS"),
@@ -83,37 +85,15 @@ def limpar_estatisticas_hustle(dados_brutos, temporada):
         })
     return lista_hustle
 
-def limpar_estatisticas_clutch(dados_brutos, temporada):
-    headers = dados_brutos['resultSets'][0]['headers']
-    linhas = dados_brutos['resultSets'][0]['rowSet']
-    lista_clutch = []
-    
-    for linha in linhas:
-        jogador = dict(zip(headers, linha))
-        lista_clutch.append({
-            "jogador_id": jogador.get("PLAYER_ID"),
-            "temporada": temporada,
-            "clutch_pts": jogador.get("PTS"),
-            "clutch_fg_pct": jogador.get("FG_PCT"),
-            "clutch_3p_pct": jogador.get("FG3_PCT"),
-            "clutch_net_rating": jogador.get("PLUS_MINUS"),
-            "clutch_usg_pct": jogador.get("USG_PCT")
-        })
-    return lista_clutch
-
 def criar_perfil_basico_liga(dados_brutos, temporada):
-    """Cria um dicionário de perfil básico para jogadores novos que aparecem nas estatísticas da liga."""
     headers = dados_brutos['resultSets'][0]['headers']
     linhas = dados_brutos['resultSets'][0]['rowSet']
-    
-    # Identifica os índices das colunas relevantes
     idx_id = headers.index("PLAYER_ID")
     idx_nome = headers.index("PLAYER_NAME")
     idx_time = headers.index("TEAM_ID") if "TEAM_ID" in headers else None
     
     perfis_basicos = []
     ids_vistos = set()
-    
     for linha in linhas:
         p_id = linha[idx_id]
         if p_id not in ids_vistos:
@@ -123,44 +103,33 @@ def criar_perfil_basico_liga(dados_brutos, temporada):
                 "nome_completo": linha[idx_nome],
                 "time_atual_id": linha[idx_time] if idx_time is not None else None
             })
-            
     return perfis_basicos
 
 def carregar_defesa_supabase(df_defesa, cliente_supabase):
-    """Formata e envia os dados de defesa cruzados para a nova tabela no Supabase."""
-    print("Iniciando carga de dados defensivos...")
-    
     registros_sucesso = 0
-    
     for _, linha in df_defesa.iterrows():
         dados = {
             "jogador_id": int(linha['PLAYER_ID']),
             "temporada": linha['temporada'],
+            "tipo_temporada": linha['tipo_temporada'],
             "roubos_totais": int(linha['STL']),
             "tocos_totais": int(linha['BLK']),
             "deflections": int(linha['DEFLECTIONS'])
         }
-        
         try:
-            # Envia para a nova tabela que você criou
             cliente_supabase.table("stats_defesa").insert(dados).execute()
             registros_sucesso += 1
-        except Exception as e:
-            print(f"Erro ao inserir dados do jogador {linha['PLAYER_ID']}: {e}")
-            
-    print(f"Carga concluída! {registros_sucesso} registros de defesa inseridos no Supabase.")
+        except: pass
+    print(f"Defesa: {registros_sucesso} inseridos.")
 
-# 👇 FUNÇÃO CORRIGIDA - Alinhada corretamente na margem esquerda
 def carregar_times_supabase(df_times, cliente_supabase):
-    """Formata e envia os dados dos times para a nova tabela no Supabase."""
-    print("Iniciando carga de dados dos times...")
     registros_sucesso = 0
-    
     for _, linha in df_times.iterrows():
         dados = {
             "time_id": int(linha['TEAM_ID']),
             "nome_time": str(linha['TEAM_NAME']),
             "temporada": str(linha['temporada']),
+            "tipo_temporada": str(linha['tipo_temporada']),
             "jogos": int(linha['GP']),
             "vitorias": int(linha['W']),
             "derrotas": int(linha['L']),
@@ -169,11 +138,27 @@ def carregar_times_supabase(df_times, cliente_supabase):
             "net_rating": float(linha['NET_RATING']),
             "pace": float(linha['PACE'])
         }
-        
         try:
             cliente_supabase.table("stats_times").insert(dados).execute()
             registros_sucesso += 1
-        except Exception as e:
-            print(f"Erro ao inserir dados do time {linha['TEAM_NAME']}: {e}")
-            
-    print(f"Carga concluída! {registros_sucesso} times inseridos no Supabase.")
+        except: pass
+    print(f"Times: {registros_sucesso} inseridos.")
+    
+def limpar_estatisticas_clutch(dados_brutos, temporada, tipo="Regular Season"):
+    headers = dados_brutos['resultSets'][0]['headers']
+    linhas = dados_brutos['resultSets'][0]['rowSet']
+    lista_clutch = []
+    
+    for linha in linhas:
+        jogador = dict(zip(headers, linha))
+        lista_clutch.append({
+            "jogador_id": jogador.get("PLAYER_ID"),
+            "temporada": temporada,
+            "tipo_temporada": tipo, # 👉 Adicionamos o tipo aqui também!
+            "clutch_pts": jogador.get("PTS"),
+            "clutch_fg_pct": jogador.get("FG_PCT"),
+            "clutch_3p_pct": jogador.get("FG3_PCT"),
+            "clutch_net_rating": jogador.get("PLUS_MINUS"),
+            "clutch_usg_pct": jogador.get("USG_PCT")
+        })
+    return lista_clutch

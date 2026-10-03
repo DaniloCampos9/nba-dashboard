@@ -6,16 +6,19 @@ st.title("🎯 Offensive Profile")
 
 jogador_nome = st.session_state.get('filtro_jogador')
 temporada_selecionada = st.session_state.get('filtro_temporada')
+# 👇 1. Resgatando o tipo de temporada
+tipo_temporada = st.session_state.get('filtro_tipo_temporada', 'Regular Season')
 
 if not jogador_nome or jogador_nome == "Selecione um jogador...":
     st.warning("👈 Por favor, selecione um jogador na barra lateral para começar.")
     st.stop()
 
-st.markdown(f"Analisando a produção e eficiência de **{jogador_nome}** na temporada **{temporada_selecionada}**.")
+# 👇 2. Adicionando o tipo de temporada no contexto visual
+st.markdown(f"Analisando a produção e eficiência de **{jogador_nome}** na temporada **{temporada_selecionada}** ({tipo_temporada}).")
 st.divider()
 
-# Puxa os dados formatados
-df_graficos = obter_dados_graficos_ataque(temporada_selecionada)
+# 👇 3. Passando a flag para a função da API do banco
+df_graficos = obter_dados_graficos_ataque(temporada_selecionada, tipo_temporada)
 
 if not df_graficos.empty:
     # Filtro básico: Esconde jogadores com menos de 10 jogos para não quebrar o gráfico com anomalias (ex: cara que jogou 2 min, fez 2 pontos e tem 100% de TS%)

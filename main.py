@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_fixed
 from extrator import extrair_dados_defesa, extrair_dados_times
 from transformador import carregar_defesa_supabase, carregar_times_supabase
+from nba_api.stats.endpoints import leaguedashplayerstats
 
 # Carrega as senhas do arquivo .env ANTES de importar o banco
 load_dotenv()
@@ -183,11 +184,61 @@ def executar_carga_apenas_times(lista_temporadas):
         time.sleep(3)
         
     print("\n--- CARGA DE TIMES CONCLUÍDA COM SUCESSO! ---")
+# Certifique-se de que os imports no topo do main.py estejam ok.
+def executar_backfill_playoffs(lista_temporadas):
+    """Loop focado em puxar todas as tabelas dos Playoffs antigos."""
+    print(f"--- INICIANDO DOWNLOAD COMPLETO DE PLAYOFFS ---")
+    tipo = "Playoffs"
+    
+    for temporada in lista_temporadas:
+        print(f"\nBaixando Playoffs da temporada: {temporada}")
+        
+        # 1. Times
+        df_times = extrair_dados_times(temporada, tipo)
+        if not df_times.empty: carregar_times_supabase(df_times, supabase)
+        
+        # 2. Defesa 
+        df_def = extrair_dados_defesa(temporada, tipo)
+        if not df_def.empty: carregar_defesa_supabase(df_def, supabase)
+        
+        # 3. Avançadas (Jogadores)
+        brutos_adv, _ = buscar_estatisticas_avancadas_liga(temporada, tipo)
+        lista_adv = limpar_estatisticas_avancadas(brutos_adv, temporada, tipo)
+        sucesso_adv = 0
+        for d in lista_adv:
+            try: 
+                supabase.table("stats_avancadas").insert(d).execute()
+                sucesso_adv += 1
+            except: pass
+        print(f"Avançadas: {sucesso_adv} inseridos.")
 
-# =======================================================
-# EXECUÇÃO PRINCIPAL
-# =======================================================
+        # 4. Tradicionais (Atalho: Puxa da liga inteira de uma vez)
+        try:
+            df_trad = leaguedashplayerstats.LeagueDashPlayerStats(season=temporada, season_type_all_star=tipo).get_data_frames()[0]
+            sucesso_trad = 0
+            for _, row in df_trad.iterrows():
+                dados = {
+                    "jogador_id": int(row['PLAYER_ID']),
+                    "temporada": temporada,
+                    "tipo_temporada": tipo,
+                    "time_abrev": row['TEAM_ABBREVIATION'],
+                    "idade": int(row['AGE']),
+                    "jogos_disputados": int(row['GP']),
+                    "pontos_totais": int(row['PTS']),
+                    "assistencias_totais": int(row['AST']),
+                    "rebotes_totais": int(row['REB'])
+                }
+                try:
+                    supabase.table("estatisticas_temporada").insert(dados).execute()
+                    sucesso_trad += 1
+                except: pass
+            print(f"Tradicionais: {sucesso_trad} inseridos.")
+        except Exception as e:
+            print(f"Erro Tradicionais: {e}")
+            
+        time.sleep(3) # Pausa dramática para a API não nos bloquear
+
 if __name__ == "__main__":
     temporadas = ["2026-27", "2025-26", "2024-25", "2023-24", "2022-23"]
-    # Comente a carga diária e rode apenas a dos times:
-    executar_carga_apenas_times(temporadas)
+    # Comente a sua carga antiga e rode apenas essa para baixar os Playoffs!
+    executar_backfill_playoffs(temporadas)

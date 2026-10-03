@@ -4,11 +4,13 @@ from data.queries import obter_lista_jogadores, obter_perfil_jogador, obter_esta
 import plotly.graph_objects as go
 
 st.title("⚔️ Player Comparison")
-st.markdown("Compare até 3 jogadores ou diferentes versões do mesmo jogador ao longo dos anos.")
+st.markdown("Compare até 3 jogadores ou diferentes versões do mesmo jogador ao longo dos anos e torneios.")
 st.divider()
 
 lista_jogadores = obter_lista_jogadores()
 temporadas = ["2026-27", "2025-26", "2024-25", "2023-24", "2022-23"]
+# 👇 1. Criamos a lista de opções de tipo de temporada para essa tela
+tipos_temporada = ["Regular Season", "Playoffs", "Regular Season + Playoffs"]
 
 # Cria 3 colunas para a seleção
 col_sel1, col_sel2, col_sel3 = st.columns(3)
@@ -21,15 +23,20 @@ def renderizar_seletor(col, num_card):
         st.subheader(f"Opção {num_card}")
         jog = st.selectbox(f"Jogador {num_card}", ["Nenhum"] + lista_jogadores, key=f"jog_{num_card}")
         temp = st.selectbox(f"Temporada {num_card}", temporadas, key=f"temp_{num_card}")
+        # 👇 2. Adicionamos a caixa de seleção do Tipo dentro do card do jogador
+        tipo = st.selectbox(f"Tipo {num_card}", tipos_temporada, key=f"tipo_{num_card}")
         
         if jog != "Nenhum":
             perfil = obter_perfil_jogador(jog)
             if perfil:
-                stats = obter_estatisticas_resumo(perfil['id'], temp)
+                # 👇 3. Passamos a nova variável 'tipo' para a função do banco
+                stats = obter_estatisticas_resumo(perfil['id'], temp, tipo)
                 if stats:
-                    return {"nome": f"{jog} ({temp[-2:]})", "stats": stats, "perfil": perfil}
+                    # 👉 Atualizamos o nome para indicar se é (Reg) ou (Play) no título
+                    sigla = "RS" if tipo == "Regular Season" else "PO" if tipo == "Playoffs" else "ALL"
+                    return {"nome": f"{jog} ({temp[-2:]} {sigla})", "stats": stats, "perfil": perfil}
                 else:
-                    st.warning(f"Sem dados para {temp}")
+                    st.warning(f"Sem dados para {temp} ({tipo})")
         return None
 
 # Renderiza os menus e coleta os dados se existirem
@@ -55,8 +62,12 @@ if len(atletas_validos) > 0:
         # Pega as fotos pra ficar estiloso
         url_foto = f"https://cdn.nba.com/headshots/nba/latest/254x190/{a['perfil']['id']}.png"
         
+        # 👇 Adicionamos arredondamento de casa decimal ao Net Rating
+        net_rating_raw = stats.get("net_rating", 0)
+        net_rating = round(net_rating_raw, 1) if isinstance(net_rating_raw, float) else net_rating_raw
+        
         tabela_comparativa.append({
-            "Foto": url_foto, # Placeholder
+            "Foto": url_foto, 
             "Atleta": a["nome"],
             "Jogos": stats.get("jogos_disputados", 0),
             "PPG": round(stats.get("pontos_totais", 0) / jogos, 1),
@@ -64,13 +75,13 @@ if len(atletas_validos) > 0:
             "APG": round(stats.get("assistencias_totais", 0) / jogos, 1),
             "TS%": f"{round(stats.get('ts_pct', 0) * 100, 1)}%",
             "USG%": f"{round(stats.get('usg_pct', 0) * 100, 1)}%",
-            "Net Rating": stats.get("net_rating", 0)
+            "Net Rating": net_rating
         })
     
     # Converte para Pandas e transpõe para os jogadores ficarem nas colunas
     df_comp = pd.DataFrame(tabela_comparativa).set_index("Atleta").T
     
-    # Remove a linha da URL da foto do Dataframe que será renderizado (ela é só pro visual custom)
+    # Remove a linha da URL da foto do Dataframe que será renderizado
     df_exibicao = df_comp.drop("Foto")
     
     # Mostramos os rostos primeiro

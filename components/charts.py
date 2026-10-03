@@ -125,3 +125,56 @@ def grafico_quadrantes_times(dados_times):
     )
 
     return fig
+
+def grafico_mapa_arremessos(df_shots):
+    """Desenha a meia-quadra da NBA e plota o mapa de calor de arremessos."""
+    if df_shots.empty:
+        return None
+        
+    fig = go.Figure()
+    
+    # Separar acertos (1) e erros (0)
+    acertos = df_shots[df_shots['SHOT_MADE_FLAG'] == 1]
+    erros = df_shots[df_shots['SHOT_MADE_FLAG'] == 0]
+    
+    # Plotar Erros (X vermelho transparente)
+    fig.add_trace(go.Scatter(
+        x=erros['LOC_X'], y=erros['LOC_Y'],
+        mode='markers', name='Erros',
+        marker=dict(color='rgba(255, 0, 0, 0.3)', size=7, symbol='x'),
+        hovertemplate="%{customdata[0]}<br>Distância: %{customdata[1]} ft<extra></extra>",
+        customdata=erros[['ACTION_TYPE', 'SHOT_DISTANCE']]
+    ))
+    
+    # Plotar Acertos (Bolinha verde sólida)
+    fig.add_trace(go.Scatter(
+        x=acertos['LOC_X'], y=acertos['LOC_Y'],
+        mode='markers', name='Acertos',
+        marker=dict(color='rgba(0, 255, 0, 0.7)', size=8, symbol='circle', line=dict(color='black', width=1)),
+        hovertemplate="%{customdata[0]}<br>Distância: %{customdata[1]} ft<extra></extra>",
+        customdata=acertos[['ACTION_TYPE', 'SHOT_DISTANCE']]
+    ))
+    
+    # A Mágica Matemática: Desenhar a quadra da NBA via SVG Paths
+    shapes = [
+        dict(type="rect", x0=-250, y0=-47.5, x1=250, y1=422.5, line=dict(color="lightgray", width=1.5)), # Limites
+        dict(type="rect", x0=-80, y0=-47.5, x1=80, y1=143.5, line=dict(color="lightgray", width=1.5)), # Garrafão
+        dict(type="circle", x0=-60, y0=83.5, x1=60, y1=203.5, line=dict(color="lightgray", width=1.5)), # Lance Livre
+        dict(type="line", x0=-220, y0=-47.5, x1=-220, y1=92.5, line=dict(color="lightgray", width=1.5)), # 3pt Canto Esq
+        dict(type="line", x0=220, y0=-47.5, x1=220, y1=92.5, line=dict(color="lightgray", width=1.5)), # 3pt Canto Dir
+        dict(type="path", path="M -220 92.5 A 239 239 0 0 1 220 92.5", line=dict(color="lightgray", width=1.5)), # Arco 3pt
+        dict(type="circle", x0=-7.5, y0=-7.5, x1=7.5, y1=7.5, line=dict(color="#FF8C00", width=2)), # Aro Laranja
+        dict(type="line", x0=-30, y0=-7.5, x1=30, y1=-7.5, line=dict(color="lightgray", width=3)), # Tabela
+    ]
+    
+    # Limpar o fundo, esconder eixos reais e aplicar as linhas
+    fig.update_layout(
+        shapes=shapes,
+        xaxis=dict(range=[-250, 250], showgrid=False, zeroline=False, visible=False),
+        yaxis=dict(range=[-50, 422.5], showgrid=False, zeroline=False, visible=False),
+        height=700, width=800,
+        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=20, r=20, t=20, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+    )
+    return fig

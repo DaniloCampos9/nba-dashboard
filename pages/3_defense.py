@@ -5,20 +5,23 @@ st.title("🛡️ Defensive Profile")
 
 jogador_nome = st.session_state.get('filtro_jogador')
 temporada_selecionada = st.session_state.get('filtro_temporada')
+# 👇 1. Resgatando o filtro novo da sessão
+tipo_temporada = st.session_state.get('filtro_tipo_temporada', 'Regular Season')
 
 if not jogador_nome or jogador_nome == "Selecione um jogador...":
     st.warning("👈 Por favor, selecione um jogador na barra lateral para começar.")
     st.stop()
 
-st.markdown(f"Métricas de esforço (Hustle) e impacto defensivo de **{jogador_nome}** na temporada **{temporada_selecionada}**.")
+# 👇 2. Atualizando o subtítulo para o usuário saber o que está olhando
+st.markdown(f"Métricas de esforço (Hustle) e impacto defensivo de **{jogador_nome}** na temporada **{temporada_selecionada}** ({tipo_temporada}).")
 st.divider()
 
 perfil = obter_perfil_jogador(jogador_nome)
 jogador_id = perfil.get("id") if perfil else None
 
-# Puxamos os dados gerais (para saber quantos jogos ele disputou) e os de defesa
-stats_gerais = obter_estatisticas_resumo(jogador_id, temporada_selecionada)
-stats_defesa = obter_estatisticas_defesa(jogador_id, temporada_selecionada)
+# 👇 3. Passando a variável tipo_temporada como terceiro parâmetro nas funções!
+stats_gerais = obter_estatisticas_resumo(jogador_id, temporada_selecionada, tipo_temporada)
+stats_defesa = obter_estatisticas_defesa(jogador_id, temporada_selecionada, tipo_temporada)
 
 if stats_defesa and stats_gerais:
     jogos = stats_gerais.get("jogos_disputados", 0)
@@ -31,6 +34,7 @@ if stats_defesa and stats_gerais:
         
         # O Def Rating a gente puxa da tabela avançada (já estava no stats_gerais)
         def_rating = stats_gerais.get("def_rating", "N/A")
+        if isinstance(def_rating, float): def_rating = round(def_rating, 1)
         
         st.subheader("Atividade Defensiva (Per Game)")
         col1, col2, col3, col4 = st.columns(4)

@@ -1,29 +1,36 @@
 import streamlit as st
-from data.queries import obter_estatisticas_resumo
+from data.queries import obter_estatisticas_resumo, obter_perfil_jogador
 
 st.title("⚡ Impact & Efficiency")
 
 jogador_nome = st.session_state.get('filtro_jogador')
 temporada_selecionada = st.session_state.get('filtro_temporada')
+# 👇 1. Resgatando o tipo de temporada
+tipo_temporada = st.session_state.get('filtro_tipo_temporada', 'Regular Season')
 
 if not jogador_nome or jogador_nome == "Selecione um jogador...":
     st.warning("👈 Por favor, selecione um jogador na barra lateral para começar.")
     st.stop()
 
-st.markdown(f"Avaliando o impacto global de **{jogador_nome}** na temporada **{temporada_selecionada}**.")
+# 👇 2. Mostrando a flag na tela
+st.markdown(f"Avaliando o impacto global de **{jogador_nome}** na temporada **{temporada_selecionada}** ({tipo_temporada}).")
 st.divider()
 
-# Precisamos do ID do jogador para a query de resumo
-from data.queries import obter_perfil_jogador
 perfil = obter_perfil_jogador(jogador_nome)
 jogador_id = perfil.get("id") if perfil else None
 
-stats = obter_estatisticas_resumo(jogador_id, temporada_selecionada)
+# 👇 3. Passando a flag para o banco de dados
+stats = obter_estatisticas_resumo(jogador_id, temporada_selecionada, tipo_temporada)
 
 if stats:
     off_rating = stats.get("off_rating", "N/A")
+    if isinstance(off_rating, float): off_rating = round(off_rating, 1)
+    
     def_rating = stats.get("def_rating", "N/A")
+    if isinstance(def_rating, float): def_rating = round(def_rating, 1)
+    
     net_rating = stats.get("net_rating", "N/A")
+    if isinstance(net_rating, float): net_rating = round(net_rating, 1)
     
     # PIE geralmente vem quebrado (ex: 0.154), multiplicamos por 100
     pie_raw = stats.get("pie")
@@ -42,18 +49,16 @@ if stats:
             help="Pontos que a equipe marca a cada 100 posses com o jogador em quadra."
         )
     with col2:
-        # No Def Rating, quanto menor, melhor. O Streamlit delta inverte a cor com 'inverse'
         st.metric(
             label="Defensive Rating (DRTG)", 
             value=def_rating, 
             help="Pontos que a equipe sofre a cada 100 posses com o jogador em quadra."
         )
     with col3:
-        # Se o Net Rating for positivo, ele fica verde automaticamente.
         st.metric(
             label="Net Rating", 
             value=net_rating,
-            delta=net_rating if isinstance(net_rating, float) else None,
+            delta=net_rating if isinstance(net_rating, (float, int)) else None,
             delta_color="normal",
             help="A diferença entre o ORTG e o DRTG. Valores positivos indicam que o time vence os minutos deste jogador."
         )

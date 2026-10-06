@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import io
 from data.db import supabase
 
 @st.cache_data(ttl=3600)
@@ -140,29 +141,56 @@ def obter_dados_times(temporada, tipo="Regular Season"):
         return df_agg.to_dict('records')
     except Exception: return []
 
+# =========================================================================
+# AS DUAS FUNÇÕES ABAIXO FORAM COMPLETAMENTE REFATORADAS PARA USAR SUPABASE
+# =========================================================================
+
 @st.cache_data(ttl=3600)
 def obter_mapa_arremessos_jogador(jogador_id, temporada, tipo_temporada="Regular Season"):
-    from nba_api.stats.endpoints import shotchartdetail
-    try:
-        def buscar_por_tipo(tipo_nba):
-            return shotchartdetail.ShotChartDetail(
-                team_id=0, player_id=jogador_id, context_measure_simple='FGA',
-                season_nullable=temporada, season_type_all_star=tipo_nba
-            ).get_data_frames()[0]
+    """Busca o mapa de arremessos instantaneamente no Supabase Storage (Buckets)."""
+    def buscar_por_tipo(tipo_nba):
+        caminho = f"{temporada}/{tipo_nba}/{jogador_id}.parquet"
+        try:
+            bytes_arquivo = supabase.storage.from_("shotcharts").download(caminho)
+            df = pd.read_parquet(io.BytesIO(bytes_arquivo))
+            
+            # === MÁGICA MATEMÁTICA PARA RECRIAR A COLUNA ===
+            # Na NBA, o aro fica no centro (0,0) e cada 10 unidades de LOC equivalem a 1 pé (foot).
+            # Usamos Pitágoras (a² + b² = c²) para achar a distância exata do arremesso!
+            if not df.empty and 'SHOT_DISTANCE' not in df.columns:
+                df['SHOT_DISTANCE'] = ((df['LOC_X']**2 + df['LOC_Y']**2) ** 0.5 / 10).round().astype(int)
+            # ===============================================
+            
+            return df
+        except Exception:
+            return pd.DataFrame()
 
-        if tipo_temporada == "Regular Season + Playoffs":
-            return pd.concat([buscar_por_tipo("Regular Season"), buscar_por_tipo("Playoffs")], ignore_index=True)
+    if tipo_temporada == "Regular Season + Playoffs":
+        df_reg = buscar_por_tipo("Regular Season")
+        df_play = buscar_por_tipo("Playoffs")
+        df_completo = pd.concat([df_reg, df_play], ignore_index=True)
+        return df_completo if not df_completo.empty else pd.DataFrame()
+    else:
         return buscar_por_tipo(tipo_temporada)
-    except Exception: return pd.DataFrame()
 
 @st.cache_data(ttl=86400)
 def obter_timeline_carreira(jogador_id):
-    """Busca a carreira INTEIRA do jogador direto da API da NBA."""
-    from nba_api.stats.endpoints import playercareerstats
+    """Busca a carreira INTEIRA do jogador direto da nossa tabela Postgres no Supabase."""
     try:
-        carreira = playercareerstats.PlayerCareerStats(player_id=jogador_id)
-        df_reg = carreira.get_data_frames()[0]
-        df_play = carreira.get_data_frames()[2]
+        resp = supabase.table("career_stats").select("*").eq("player_id", jogador_id).execute()
+        if not resp.data:
+            return pd.DataFrame(), pd.DataFrame()
+            
+        df = pd.DataFrame(resp.data)
+        
+        # Filtra e organiza os DataFrames exatamente do jeito que a sua interface espera
+        df_reg = df[df['tipo_temporada'] == 'Regular Season'].copy()
+        df_play = df[df['tipo_temporada'] == 'Playoffs'].copy()
+        
+        # Ordena pela temporada para o gráfico ficar bonito
+        df_reg = df_reg.sort_values(by="season_id")
+        df_play = df_play.sort_values(by="season_id")
+        
         return df_reg, df_play
     except Exception:
         return pd.DataFrame(), pd.DataFrame()

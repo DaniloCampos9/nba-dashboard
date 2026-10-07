@@ -1,0 +1,2655 @@
+
+================================================================================
+ARQUIVO: .\app.py
+================================================================================
+
+import streamlit as st
+from data.queries import obter_lista_jogadores
+
+# 1. Configuração da página DEVE ser o primeiro comando
+st.set_page_config(
+    page_title="NBA Player Analytics",
+    page_icon="🏀",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+from data.queries import obter_lista_jogadores, obter_lista_times
+
+# 2. Configuração dos Filtros Globais na Sidebar
+st.sidebar.title("⚙️ Filtros da Análise")
+
+temporadas_disponiveis = ["2026-27", "2025-26", "2024-25", "2023-24", "2022-23"]
+temporada = st.sidebar.selectbox("Temporada", temporadas_disponiveis, index=0)
+tipo_temporada = st.sidebar.radio("Tipo de Temporada", ["Regular Season", "Playoffs", "Regular Season + Playoffs"])
+
+st.sidebar.divider()
+st.sidebar.markdown("### Contexto de Análise")
+
+# --- NOVO: Seletor de Time ---
+lista_times = obter_lista_times(temporada)
+opcoes_times = ["Selecione um time..."] + lista_times
+time_selecionado = st.sidebar.selectbox("Franquia", opcoes_times)
+
+# --- Seletor de Jogador ---
+lista_jogadores = obter_lista_jogadores()
+opcoes_jogadores = ["Selecione um jogador..."] + lista_jogadores
+jogador_selecionado = st.sidebar.selectbox("Jogador", opcoes_jogadores)
+
+# Salvar filtros na sessão para as outras páginas lerem de forma independente
+st.session_state['filtro_temporada'] = temporada
+st.session_state['filtro_tipo_temporada'] = tipo_temporada
+st.session_state['filtro_time'] = time_selecionado
+st.session_state['filtro_jogador'] = jogador_selecionado
+
+# 3. Roteamento de Páginas (Home configurada como padrão)
+pages = {
+    "Início": [
+        st.Page("pages/0_home.py", title="Home / Bem-vindo", icon="🏠", default=True),
+    ],
+    "Dashboard": [
+        st.Page("pages/1_overview.py", title="Overview", icon="📊"),
+        st.Page("pages/2_offense.py", title="Offensive Profile", icon="🎯"),
+        st.Page("pages/7_shot_chart.py", title="Shot Charts", icon="🗺️"), 
+        st.Page("pages/3_defense.py", title="Defensive Profile", icon="🛡"),
+        st.Page("pages/4_impact.py", title="Impact & Efficiency", icon="⚡"),
+        st.Page("pages/6_teams.py", title="Team Analytics", icon="🏀"),
+    ],
+    "Ferramentas": [
+        st.Page("pages/5_comparison.py", title="Player Comparison", icon="⚔️")
+    ],
+    "Metodologia": [
+        st.Page("pages/8_glossary.py", title="Glossary & Methodology", icon="📚")
+    ]
+}
+
+pg = st.navigation(pages)
+pg.run()
+
+================================================================================
+ARQUIVO: .\carga_especial.py
+================================================================================
+
+import pandas as pd
+import time
+import io
+from supabase import create_client
+from nba_api.stats.endpoints import shotchartdetail, playercareerstats
+
+SUPABASE_URL = "https://qqtvqrlrcgctngghwvfd.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFxdHZxcmxyY2djdG5nZ2h3dmZkIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDYyMzAyMywiZXhwIjoyMTA2MTk5MDIzfQ.7BRJMTOpv4aSAHwo-iPzdQHE7Yd1bpyXfZPMHoMmUF0"
+
+sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def carga_carreira_e_arremessos():
+    print("🚀 Iniciando extração definitiva (Retomando do 27º jogador)...")
+    
+    resp = sb.table("jogadores").select("id, nome_completo").execute()
+    jogadores = resp.data
+    
+    # Vamos começar do índice 26 (que é o 27º jogador da lista real)
+    # Se quiser começar do começo um dia, é só mudar para 0
+    JOGADOR_INICIAL = 560
+    jogadores_restantes = jogadores[JOGADOR_INICIAL:]
+    
+    temporadas = ["2026-27", "2025-26", "2024-25", "2023-24", "2022-23"]
+    
+    for idx, jogador in enumerate(jogadores_restantes):
+        player_id = jogador['id']
+        nome = jogador['nome_completo']
+        
+        numero_real = JOGADOR_INICIAL + idx + 1
+        print(f"\n[{numero_real}/{len(jogadores)}] Baixando dados de {nome}...")
+        
+        # ==========================================
+        # 1. CARREIRA (Postgres)
+        # ==========================================
+        tentativas_carreira = 0
+        while tentativas_carreira < 3:
+            try:
+                time.sleep(1.5) # Pausa levemente maior para não irritar o firewall
+                carreira = playercareerstats.PlayerCareerStats(player_id=player_id, timeout=30)
+                
+                # Temporada Regular
+                df_reg = carreira.get_data_frames()[0]
+                if not df_reg.empty:
+                    df_reg = df_reg[['PLAYER_ID', 'SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PTS', 'AST', 'REB']].copy()
+                    df_reg.columns = ['player_id', 'season_id', 'team_abbreviation', 'gp', 'pts', 'ast', 'reb']
+                    df_reg['tipo_temporada'] = 'Regular Season'
+                    sb.table("career_stats").upsert(df_reg.to_dict('records')).execute()
+                    
+                # Playoffs
+                df_play = carreira.get_data_frames()[2]
+                if not df_play.empty:
+                    df_play = df_play[['PLAYER_ID', 'SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PTS', 'AST', 'REB']].copy()
+                    df_play.columns = ['player_id', 'season_id', 'team_abbreviation', 'gp', 'pts', 'ast', 'reb']
+                    df_play['tipo_temporada'] = 'Playoffs'
+                    sb.table("career_stats").upsert(df_play.to_dict('records')).execute()
+                    
+                print(f"  ✅ Carreira salva no Postgres.")
+                break # Deu certo, sai do loop de tentativas
+                
+            except Exception as e:
+                tentativas_carreira += 1
+                if tentativas_carreira < 3:
+                    print(f"  ⏳ Tropeço na carreira. Respirando 5s para tentar de novo...")
+                    time.sleep(5)
+                else:
+                    print(f"  ❌ Erro definitivo na carreira de {nome}: {e}")
+
+        # ==========================================
+        # 2. SHOT CHARTS (Storage em Parquet)
+        # ==========================================
+        for season in temporadas:
+            for tipo_temp in ["Regular Season", "Playoffs"]:
+                tentativas_shots = 0
+                while tentativas_shots < 3:
+                    try:
+                        time.sleep(1.5)
+                        resp_shots = shotchartdetail.ShotChartDetail(
+                            team_id=0, player_id=player_id, season_nullable=season,
+                            season_type_all_star=tipo_temp, context_measure_simple="FGA", timeout=30
+                        )
+                        df_shots = resp_shots.get_data_frames()[0]
+                        
+                        if not df_shots.empty:
+                            df_shots = df_shots[["GAME_ID", "PERIOD", "LOC_X", "LOC_Y", "SHOT_MADE_FLAG", "SHOT_TYPE", "ACTION_TYPE"]]
+                            
+                            buf = io.BytesIO()
+                            df_shots.to_parquet(buf, index=False, engine='pyarrow', compression='snappy')
+                            
+                            caminho_arquivo = f"{season}/{tipo_temp}/{player_id}.parquet"
+                            
+                            sb.storage.from_("shotcharts").upload(
+                                path=caminho_arquivo,
+                                file=buf.getvalue(),
+                                file_options={"upsert": "true", "content-type": "application/octet-stream"}
+                            )
+                            print(f"  🏀 Shot Chart {season} ({tipo_temp}) salvo no Storage.")
+                        
+                        break # Se chegou aqui sem erro (com ou sem arremessos), sai do loop de tentativas
+                        
+                    except Exception as e:
+                        erro_str = str(e)
+                        # Se for erro de JSON Vazio (Bloqueio) ou Timeout, nós tentamos de novo
+                        if "Expecting value" in erro_str or "Timeout" in erro_str or "Read timed out" in erro_str:
+                            tentativas_shots += 1
+                            if tentativas_shots < 3:
+                                print(f"  ⏳ NBA bloqueou {season} ({tipo_temp}). Respirando 5s para tentar de novo...")
+                                time.sleep(5)
+                            else:
+                                print(f"  ⚠ Desistindo de {season} ({tipo_temp}) após 3 tentativas.")
+                        else:
+                            # Se for outro tipo de erro (ex: jogador não jogou na liga ainda), ignora e segue
+                            break
+
+if __name__ == "__main__":
+    carga_carreira_e_arremessos()
+    print("\n🚀 CARGA FINALIZADA COM SUCESSO!")
+
+================================================================================
+ARQUIVO: .\carregador.py
+================================================================================
+
+import os
+from supabase import create_client, Client
+from tenacity import retry, stop_after_attempt, wait_fixed
+
+URL = "https://qqtvqrlrcgctngghwvfd.supabase.co"
+KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFxdHZxcmxyY2djdG5nZ2h3dmZkIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDYyMzAyMywiZXhwIjoyMTA2MTk5MDIzfQ.7BRJMTOpv4aSAHwo-iPzdQHE7Yd1bpyXfZPMHoMmUF0"
+
+
+supabase: Client = create_client(URL, KEY)
+
+def dividir_em_lotes(lista, tamanho=100):
+    """Fatia listas gigantes em pedaços menores para o banco de dados não engasgar."""
+    for i in range(0, len(lista), tamanho):
+        yield lista[i:i + tamanho]
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def enviar_para_banco(dados_limpos):
+    if not dados_limpos: return
+    print(f"Enviando {len(dados_limpos)} perfis em lotes de 100...")
+    for lote in dividir_em_lotes(dados_limpos, 100):
+        supabase.table("jogadores").upsert(lote).execute()
+    print("Sucesso! Perfis carregados.")
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def enviar_estatisticas_para_banco(lista_temporadas):
+    if not lista_temporadas: return
+    print(f"Enviando {len(lista_temporadas)} stats tradicionais em lotes de 100...")
+    for lote in dividir_em_lotes(lista_temporadas, 100):
+        supabase.table("estatisticas_temporada").upsert(lote).execute()
+    print("Sucesso! Tradicionais carregadas.")
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def enviar_stats_avancadas(lista_stats):
+    if not lista_stats: return
+    print(f"Enviando {len(lista_stats)} stats avançadas em lotes de 100...")
+    for lote in dividir_em_lotes(lista_stats, 100):
+        supabase.table("stats_avancadas").upsert(lote).execute()
+    print("Sucesso! Avançadas carregadas.")
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def enviar_stats_hustle(lista_stats):
+    if not lista_stats: return
+    print(f"Enviando {len(lista_stats)} stats de hustle em lotes de 100...")
+    for lote in dividir_em_lotes(lista_stats, 100):
+        supabase.table("stats_hustle").upsert(lote).execute()
+    print("Sucesso! Hustle carregado.")
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def enviar_stats_clutch(lista_stats):
+    if not lista_stats: return
+    print(f"Enviando {len(lista_stats)} stats clutch em lotes de 100...")
+    for lote in dividir_em_lotes(lista_stats, 100):
+        supabase.table("stats_clutch").upsert(lote).execute()
+    print("Sucesso! Clutch carregado.")
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def limpar_dados_temporada_atual(temporada):
+    """Apaga os dados da temporada atual para evitar duplicidade na carga diária otimizada."""
+    print(f"Limpando registros antigos da temporada {temporada} no banco...")
+    supabase.table("stats_avancadas").delete().eq("temporada", temporada).execute()
+    supabase.table("stats_hustle").delete().eq("temporada", temporada).execute()
+    supabase.table("stats_clutch").delete().eq("temporada", temporada).execute()
+    print("Limpeza concluída! Banco pronto para os dados novos.")
+
+================================================================================
+ARQUIVO: .\extrator.py
+================================================================================
+
+from nba_api.stats.endpoints import (
+    commonplayerinfo, playercareerstats, commonallplayers, 
+    leaguedashplayerstats, leaguehustlestatsplayer, leaguedashplayerclutch,
+    leaguedashteamstats
+)
+import time
+from tenacity import retry, stop_after_attempt, wait_fixed
+import pandas as pd
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def buscar_dados_brutos_jogador(player_id):
+    time.sleep(0.3) 
+    info = commonplayerinfo.CommonPlayerInfo(player_id=player_id)
+    return info.get_dict()
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def buscar_estatisticas_carreira(player_id):
+    time.sleep(0.3)
+    carreira = playercareerstats.PlayerCareerStats(player_id=player_id)
+    return carreira.get_dict()
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def buscar_estatisticas_avancadas_liga(temporada="2023-24", tipo="Regular Season"):
+    stats = leaguedashplayerstats.LeagueDashPlayerStats(
+        measure_type_detailed_defense='Advanced', season=temporada, season_type_all_star=tipo
+    )
+    return stats.get_dict(), temporada
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def buscar_estatisticas_hustle_liga(temporada="2023-24", tipo="Regular Season"):
+    stats = leaguehustlestatsplayer.LeagueHustleStatsPlayer(season=temporada, season_type_all_star=tipo)
+    return stats.get_dict(), temporada
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def buscar_estatisticas_clutch_liga(temporada="2023-24", tipo="Regular Season"):
+    stats = leaguedashplayerclutch.LeagueDashPlayerClutch(season=temporada, season_type_all_star=tipo)
+    return stats.get_dict(), temporada
+
+def extrair_dados_defesa(temporada_nba, tipo="Regular Season"):
+    dados_trad = leaguedashplayerstats.LeagueDashPlayerStats(season=temporada_nba, season_type_all_star=tipo).get_data_frames()[0]
+    df_trad = dados_trad[['PLAYER_ID', 'STL', 'BLK']]
+    
+    dados_hustle = leaguehustlestatsplayer.LeagueHustleStatsPlayer(season=temporada_nba, season_type_all_star=tipo).get_data_frames()[0]
+    df_hustle = dados_hustle[['PLAYER_ID', 'DEFLECTIONS']]
+    
+    df_defesa = pd.merge(df_trad, df_hustle, on='PLAYER_ID', how='inner')
+    df_defesa['temporada'] = temporada_nba
+    df_defesa['tipo_temporada'] = tipo
+    return df_defesa
+
+def extrair_dados_times(temporada_nba, tipo="Regular Season"):
+    try:
+        dados_times = leaguedashteamstats.LeagueDashTeamStats(
+            season=temporada_nba, measure_type_detailed_defense='Advanced', season_type_all_star=tipo
+        ).get_data_frames()[0]
+        
+        df_times = dados_times[['TEAM_ID', 'TEAM_NAME', 'GP', 'W', 'L', 'OFF_RATING', 'DEF_RATING', 'NET_RATING', 'PACE']].copy()
+        df_times['temporada'] = temporada_nba
+        df_times['tipo_temporada'] = tipo
+        return df_times
+    except Exception as e:
+        print(f"Erro na extração de times: {e}")
+        return pd.DataFrame()
+
+================================================================================
+ARQUIVO: .\main.py
+================================================================================
+
+import time
+from dotenv import load_dotenv
+from tenacity import retry, stop_after_attempt, wait_fixed
+from extrator import extrair_dados_defesa, extrair_dados_times
+from transformador import carregar_defesa_supabase, carregar_times_supabase
+from nba_api.stats.endpoints import leaguedashplayerstats
+from nba_api.stats.endpoints import commonallplayers
+
+# Carrega as senhas do arquivo .env ANTES de importar o banco
+load_dotenv()
+
+# --- IMPORTS DO EXTRATOR ---
+from extrator import (
+    buscar_dados_brutos_jogador, 
+    buscar_estatisticas_carreira, 
+    buscar_estatisticas_avancadas_liga, 
+    buscar_estatisticas_hustle_liga, 
+    buscar_estatisticas_clutch_liga,
+    extrair_dados_defesa
+)
+
+# --- IMPORTS DO TRANSFORMADOR ---
+from transformador import (
+    limpar_dados_jogador, 
+    limpar_estatisticas_carreira, 
+    limpar_estatisticas_avancadas, 
+    limpar_estatisticas_hustle, 
+    limpar_estatisticas_clutch,
+    criar_perfil_basico_liga,
+    carregar_defesa_supabase
+)
+
+# --- IMPORTS DO CARREGADOR ---
+from carregador import (
+    enviar_para_banco, 
+    enviar_estatisticas_para_banco, 
+    enviar_stats_avancadas, 
+    enviar_stats_hustle, 
+    enviar_stats_clutch,
+    limpar_dados_temporada_atual,
+    supabase
+)
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def obter_ids_jogadores_ativos():
+    print("Mapeando todos os jogadores ativos da liga...")
+    lista_completa = commonallplayers.CommonAllPlayers(is_only_current_season=1).get_dict()
+    id_index = lista_completa['resultSets'][0]['headers'].index("PERSON_ID")
+    ids = [linha[id_index] for linha in lista_completa['resultSets'][0]['rowSet']]
+    print(f"Total de {len(ids)} jogadores encontrados.\n")
+    return ids
+
+
+# =======================================================
+# ROTINA 1: ATUALIZAÇÃO DIÁRIA (A QUE VAMOS DEIXAR LIGADA)
+# =======================================================
+def executar_atualizacao_diaria(temporada_atual="2026-27"):
+    """Rotina ultrarrápida otimizada para rodar diariamente no PC."""
+    print(f"--- INICIANDO ATUALIZAÇÃO DIÁRIA DA NBA ({temporada_atual}) ---")
+    
+    ids_jogadores = obter_ids_jogadores_ativos()
+    limpar_dados_temporada_atual(temporada_atual)
+    
+    try:
+        # ATALHO DAS ESTATÍSTICAS TRADICIONAIS E 3 PONTOS (Regular Season)
+        print("Baixando Estatísticas Tradicionais (Incluindo 3 Pontos)...")
+        tipo = "Regular Season"
+        df_trad = leaguedashplayerstats.LeagueDashPlayerStats(season=temporada_atual, season_type_all_star=tipo).get_data_frames()[0]
+        
+        lista_trad = []
+        for _, row in df_trad.iterrows():
+            if row['PLAYER_ID'] in ids_jogadores:
+                lista_trad.append({
+                    "jogador_id": int(row['PLAYER_ID']),
+                    "temporada": temporada_atual,
+                    "tipo_temporada": tipo,
+                    "time_abrev": row['TEAM_ABBREVIATION'],
+                    "idade": int(row['AGE']),
+                    "jogos_disputados": int(row['GP']),
+                    "pontos_totais": int(row['PTS']),
+                    "assistencias_totais": int(row['AST']),
+                    "rebotes_totais": int(row['REB']),
+                    # 👇 OS NOVOS CAMPOS AQUI 👇
+                    "fg3m_totais": int(row['FG3M']),
+                    "fg3a_totais": int(row['FG3A'])
+                })
+        
+        if lista_trad: enviar_estatisticas_para_banco(lista_trad)
+        
+        bruto_adv, _ = buscar_estatisticas_avancadas_liga(temporada_atual)
+        
+        perfil_basico = criar_perfil_basico_liga(bruto_adv, temporada_atual)
+        if perfil_basico: 
+            enviar_para_banco(perfil_basico)
+
+        limpa_adv = limpar_estatisticas_avancadas(bruto_adv, temporada_atual)
+        filtrada_adv = [s for s in limpa_adv if s["jogador_id"] in ids_jogadores]
+        
+        bruto_hustle, _ = buscar_estatisticas_hustle_liga(temporada_atual)
+        limpa_hustle = limpar_estatisticas_hustle(bruto_hustle, temporada_atual)
+        filtrada_hustle = [s for s in limpa_hustle if s["jogador_id"] in ids_jogadores]
+        
+        bruto_clutch, _ = buscar_estatisticas_clutch_liga(temporada_atual)
+        limpa_clutch = limpar_estatisticas_clutch(bruto_clutch, temporada_atual)
+        filtrada_clutch = [s for s in limpa_clutch if s["jogador_id"] in ids_jogadores]
+        
+        print(f"\n[CARGA] Enviando métricas atualizadas de {temporada_atual}...")
+        if filtrada_adv: enviar_stats_avancadas(filtrada_adv)
+        if filtrada_hustle: enviar_stats_hustle(filtrada_hustle)
+        if filtrada_clutch: enviar_stats_clutch(filtrada_clutch)
+        
+        df_defesa = extrair_dados_defesa(temporada_atual)
+        if not df_defesa.empty:
+            df_defesa = df_defesa[df_defesa['PLAYER_ID'].isin(ids_jogadores)]
+            carregar_defesa_supabase(df_defesa, supabase)
+            
+        print("\n--- ATUALIZAÇÃO DIÁRIA CONCLUÍDA COM SUCESSO! ---")
+        
+    except Exception as e:
+        print(f"[ERRO FATAL NA ATUALIZAÇÃO DIÁRIA]: {e}")
+
+
+# =======================================================
+# ROTINA 2: CARGA HISTÓRICA COMPLETA
+# =======================================================
+def executar_carga_historica(lista_temporadas):
+    print(f"--- INICIANDO CARGA HISTÓRICA ({len(lista_temporadas)} temporadas) ---")
+    ids_jogadores = obter_ids_jogadores_ativos()
+    
+    for temporada in lista_temporadas:
+        print(f"\n=========================================================")
+        print(f" PROCESSANDO TEMPORADA: {temporada}")
+        print(f"=========================================================")
+        
+        limpar_dados_temporada_atual(temporada)
+        
+        try:
+            tipo = "Regular Season"
+            df_trad = leaguedashplayerstats.LeagueDashPlayerStats(season=temporada, season_type_all_star=tipo).get_data_frames()[0]
+            lista_trad = []
+            for _, row in df_trad.iterrows():
+                if row['PLAYER_ID'] in ids_jogadores:
+                    lista_trad.append({
+                        "jogador_id": int(row['PLAYER_ID']),
+                        "temporada": temporada,
+                        "tipo_temporada": tipo,
+                        "time_abrev": row['TEAM_ABBREVIATION'],
+                        "idade": int(row['AGE']),
+                        "jogos_disputados": int(row['GP']),
+                        "pontos_totais": int(row['PTS']),
+                        "assistencias_totais": int(row['AST']),
+                        "rebotes_totais": int(row['REB']),
+                        "fg3m_totais": int(row['FG3M']),
+                        "fg3a_totais": int(row['FG3A'])
+                    })
+            if lista_trad: enviar_estatisticas_para_banco(lista_trad)
+
+            bruto_adv, _ = buscar_estatisticas_avancadas_liga(temporada)
+            perfil_basico = criar_perfil_basico_liga(bruto_adv, temporada)
+            if perfil_basico: enviar_para_banco(perfil_basico)
+
+            limpa_adv = limpar_estatisticas_avancadas(bruto_adv, temporada)
+            filtrada_adv = [s for s in limpa_adv if s["jogador_id"] in ids_jogadores]
+            
+            bruto_hustle, _ = buscar_estatisticas_hustle_liga(temporada)
+            limpa_hustle = limpar_estatisticas_hustle(bruto_hustle, temporada)
+            filtrada_hustle = [s for s in limpa_hustle if s["jogador_id"] in ids_jogadores]
+            
+            bruto_clutch, _ = buscar_estatisticas_clutch_liga(temporada)
+            limpa_clutch = limpar_estatisticas_clutch(bruto_clutch, temporada)
+            filtrada_clutch = [s for s in limpa_clutch if s["jogador_id"] in ids_jogadores]
+            
+            if filtrada_adv: enviar_stats_avancadas(filtrada_adv)
+            if filtrada_hustle: enviar_stats_hustle(filtrada_hustle)
+            if filtrada_clutch: enviar_stats_clutch(filtrada_clutch)
+            
+            df_defesa = extrair_dados_defesa(temporada)
+            if not df_defesa.empty:
+                df_defesa = df_defesa[df_defesa['PLAYER_ID'].isin(ids_jogadores)]
+                carregar_defesa_supabase(df_defesa, supabase)
+                
+        except Exception as e:
+            print(f"[ERRO FATAL NA TEMPORADA {temporada}]: {e}")
+            
+        time.sleep(3)
+    print("\n--- CARGA HISTÓRICA CONCLUÍDA COM SUCESSO! ---")
+
+
+# =======================================================
+# ROTINA 3: CARGAS EXCLUSIVAS (TIMES E DEFESA)
+# =======================================================
+def executar_carga_apenas_defesa(lista_temporadas):
+    print(f"--- INICIANDO CARGA EXCLUSIVA DE DEFESA ({len(lista_temporadas)} temporadas) ---")
+    ids_jogadores = obter_ids_jogadores_ativos()
+    for temporada in lista_temporadas:
+        try:
+            df_defesa = extrair_dados_defesa(temporada)
+            if not df_defesa.empty:
+                df_defesa = df_defesa[df_defesa['PLAYER_ID'].isin(ids_jogadores)]
+                carregar_defesa_supabase(df_defesa, supabase)
+        except Exception as e:
+            print(f"[ERRO NA TEMPORADA {temporada}]: {e}")
+        time.sleep(3)
+
+def executar_carga_apenas_times(lista_temporadas):
+    print(f"--- INICIANDO CARGA EXCLUSIVA DE TIMES ({len(lista_temporadas)} temporadas) ---")
+    for temporada in lista_temporadas:
+        print(f"\n PUXANDO TIMES: {temporada}")
+        try:
+            df_times = extrair_dados_times(temporada)
+            if not df_times.empty:
+                carregar_times_supabase(df_times, supabase)
+            else:
+                print("Nenhum dado de time retornado.")
+        except Exception as e:
+            print(f"[ERRO NA TEMPORADA {temporada}]: {e}")
+        time.sleep(3)
+    print("\n--- CARGA DE TIMES CONCLUÍDA COM SUCESSO! ---")
+
+# =======================================================
+# ROTINA 4: BACKFILL DE PLAYOFFS
+# =======================================================
+def executar_backfill_playoffs(lista_temporadas):
+    print(f"--- INICIANDO DOWNLOAD COMPLETO DE PLAYOFFS ---")
+    tipo = "Playoffs"
+    
+    for temporada in lista_temporadas:
+        print(f"\nBaixando Playoffs da temporada: {temporada}")
+        
+        df_times = extrair_dados_times(temporada, tipo)
+        if not df_times.empty: carregar_times_supabase(df_times, supabase)
+        
+        df_def = extrair_dados_defesa(temporada, tipo)
+        if not df_def.empty: carregar_defesa_supabase(df_def, supabase)
+        
+        brutos_adv, _ = buscar_estatisticas_avancadas_liga(temporada, tipo)
+        lista_adv = limpar_estatisticas_avancadas(brutos_adv, temporada, tipo)
+        sucesso_adv = 0
+        for d in lista_adv:
+            try: 
+                supabase.table("stats_avancadas").insert(d).execute()
+                sucesso_adv += 1
+            except: pass
+        print(f"Avançadas: {sucesso_adv} inseridos.")
+
+        try:
+            df_trad = leaguedashplayerstats.LeagueDashPlayerStats(season=temporada, season_type_all_star=tipo).get_data_frames()[0]
+            lista_trad = []
+            for _, row in df_trad.iterrows():
+                lista_trad.append({
+                    "jogador_id": int(row['PLAYER_ID']),
+                    "temporada": temporada,
+                    "tipo_temporada": tipo,
+                    "time_abrev": row['TEAM_ABBREVIATION'],
+                    "idade": int(row['AGE']),
+                    "jogos_disputados": int(row['GP']),
+                    "pontos_totais": int(row['PTS']),
+                    "assistencias_totais": int(row['AST']),
+                    "rebotes_totais": int(row['REB']),
+                    # 👇 OS NOVOS CAMPOS DOS PLAYOFFS 👇
+                    "fg3m_totais": int(row['FG3M']),
+                    "fg3a_totais": int(row['FG3A'])
+                })
+            
+            if lista_trad:
+                # O Upsert substitui quem já existe, assim não gera erro
+                enviar_estatisticas_para_banco(lista_trad)
+                print(f"Tradicionais: Atualizados com 3 Pontos.")
+        except Exception as e:
+            print(f"Erro Tradicionais: {e}")
+            
+        time.sleep(3)
+
+if __name__ == "__main__":
+    # Deixei a atualização diária pronta para rodar
+    executar_atualizacao_diaria("2026-27")
+
+================================================================================
+ARQUIVO: .\transformador.py
+================================================================================
+
+def converter_para_inteiro(valor):
+    if valor is None: return None
+    return int(float(valor))
+
+def limpar_dados_jogador(dados_brutos):
+    bloco_principal = dados_brutos['resultSets'][0]
+    headers = bloco_principal['headers']
+    valores = bloco_principal['rowSet'][0]
+    jogador_completo = dict(zip(headers, valores))
+    return {
+        "id": jogador_completo.get("PERSON_ID"),
+        "nome_completo": jogador_completo.get("DISPLAY_FIRST_LAST"),
+        "data_nascimento": jogador_completo.get("BIRTHDATE"),
+        "pais": jogador_completo.get("COUNTRY"),
+        "altura_pes": jogador_completo.get("HEIGHT"),
+        "peso_lbs": converter_para_inteiro(jogador_completo.get("WEIGHT")),
+        "camisa": jogador_completo.get("JERSEY"),
+        "posicao": jogador_completo.get("POSITION"),
+        "time_atual_id": jogador_completo.get("TEAM_ID"),
+        "ano_draft": jogador_completo.get("DRAFT_YEAR")
+    }
+
+def limpar_estatisticas_carreira(dados_brutos, tipo="Regular Season"):
+    indice_bloco = 0 if tipo == "Regular Season" else 2
+    try:
+        bloco_temporadas = dados_brutos['resultSets'][indice_bloco]
+        headers = bloco_temporadas['headers']
+        linhas = bloco_temporadas['rowSet']
+        lista_temporadas = []
+        for linha in linhas:
+            temporada = dict(zip(headers, linha))
+            lista_temporadas.append({
+                "jogador_id": temporada.get("PLAYER_ID"),
+                "temporada": temporada.get("SEASON_ID"),
+                "tipo_temporada": tipo,
+                "time_abrev": temporada.get("TEAM_ABBREVIATION"),
+                "idade": converter_para_inteiro(temporada.get("PLAYER_AGE")),
+                "jogos_disputados": converter_para_inteiro(temporada.get("GP")),
+                "pontos_totais": converter_para_inteiro(temporada.get("PTS")),
+                "assistencias_totais": converter_para_inteiro(temporada.get("AST")),
+                "rebotes_totais": converter_para_inteiro(temporada.get("REB"))
+            })
+        return lista_temporadas
+    except:
+        return []
+
+def limpar_estatisticas_avancadas(dados_brutos, temporada, tipo="Regular Season"):
+    headers = dados_brutos['resultSets'][0]['headers']
+    linhas = dados_brutos['resultSets'][0]['rowSet']
+    lista_avancada = []
+    for linha in linhas:
+        jogador = dict(zip(headers, linha))
+        lista_avancada.append({
+            "jogador_id": jogador.get("PLAYER_ID"),
+            "temporada": temporada,
+            "tipo_temporada": tipo,
+            "ts_pct": jogador.get("TS_PCT"),
+            "efg_pct": jogador.get("EFG_PCT"),
+            "off_rating": jogador.get("OFF_RATING"),
+            "def_rating": jogador.get("DEF_RATING"),
+            "net_rating": jogador.get("NET_RATING"),
+            "usg_pct": jogador.get("USG_PCT"),
+            "pie": jogador.get("PIE"),
+            "ast_pct": jogador.get("AST_PCT"),
+            "ast_tov": jogador.get("AST_TOV"),
+            "pace": jogador.get("PACE")
+        })
+    return lista_avancada
+
+def limpar_estatisticas_hustle(dados_brutos, temporada, tipo="Regular Season"):
+    headers = dados_brutos['resultSets'][0]['headers']
+    linhas = dados_brutos['resultSets'][0]['rowSet']
+    lista_hustle = []
+    for linha in linhas:
+        jogador = dict(zip(headers, linha))
+        lista_hustle.append({
+            "jogador_id": jogador.get("PLAYER_ID"),
+            "temporada": temporada,
+            "tipo_temporada": tipo,
+            "deflections": jogador.get("DEFLECTIONS"),
+            "charges_drawn": jogador.get("CHARGES_DRAWN"),
+            "contested_shots": jogador.get("CONTESTED_SHOTS"),
+            "screen_assists": jogador.get("SCREEN_ASSISTS"),
+            "loose_balls_recovered": jogador.get("LOOSE_BALLS_RECOVERED")
+        })
+    return lista_hustle
+
+def criar_perfil_basico_liga(dados_brutos, temporada):
+    headers = dados_brutos['resultSets'][0]['headers']
+    linhas = dados_brutos['resultSets'][0]['rowSet']
+    idx_id = headers.index("PLAYER_ID")
+    idx_nome = headers.index("PLAYER_NAME")
+    idx_time = headers.index("TEAM_ID") if "TEAM_ID" in headers else None
+    
+    perfis_basicos = []
+    ids_vistos = set()
+    for linha in linhas:
+        p_id = linha[idx_id]
+        if p_id not in ids_vistos:
+            ids_vistos.add(p_id)
+            perfis_basicos.append({
+                "id": p_id,
+                "nome_completo": linha[idx_nome],
+                "time_atual_id": linha[idx_time] if idx_time is not None else None
+            })
+    return perfis_basicos
+
+def carregar_defesa_supabase(df_defesa, cliente_supabase):
+    registros_sucesso = 0
+    for _, linha in df_defesa.iterrows():
+        dados = {
+            "jogador_id": int(linha['PLAYER_ID']),
+            "temporada": linha['temporada'],
+            "tipo_temporada": linha['tipo_temporada'],
+            "roubos_totais": int(linha['STL']),
+            "tocos_totais": int(linha['BLK']),
+            "deflections": int(linha['DEFLECTIONS'])
+        }
+        try:
+            cliente_supabase.table("stats_defesa").insert(dados).execute()
+            registros_sucesso += 1
+        except: pass
+    print(f"Defesa: {registros_sucesso} inseridos.")
+
+def carregar_times_supabase(df_times, cliente_supabase):
+    registros_sucesso = 0
+    for _, linha in df_times.iterrows():
+        dados = {
+            "time_id": int(linha['TEAM_ID']),
+            "nome_time": str(linha['TEAM_NAME']),
+            "temporada": str(linha['temporada']),
+            "tipo_temporada": str(linha['tipo_temporada']),
+            "jogos": int(linha['GP']),
+            "vitorias": int(linha['W']),
+            "derrotas": int(linha['L']),
+            "off_rating": float(linha['OFF_RATING']),
+            "def_rating": float(linha['DEF_RATING']),
+            "net_rating": float(linha['NET_RATING']),
+            "pace": float(linha['PACE'])
+        }
+        try:
+            cliente_supabase.table("stats_times").insert(dados).execute()
+            registros_sucesso += 1
+        except: pass
+    print(f"Times: {registros_sucesso} inseridos.")
+    
+def limpar_estatisticas_clutch(dados_brutos, temporada, tipo="Regular Season"):
+    headers = dados_brutos['resultSets'][0]['headers']
+    linhas = dados_brutos['resultSets'][0]['rowSet']
+    lista_clutch = []
+    
+    for linha in linhas:
+        jogador = dict(zip(headers, linha))
+        lista_clutch.append({
+            "jogador_id": jogador.get("PLAYER_ID"),
+            "temporada": temporada,
+            "tipo_temporada": tipo, # 👉 Adicionamos o tipo aqui também!
+            "clutch_pts": jogador.get("PTS"),
+            "clutch_fg_pct": jogador.get("FG_PCT"),
+            "clutch_3p_pct": jogador.get("FG3_PCT"),
+            "clutch_net_rating": jogador.get("PLUS_MINUS"),
+            "clutch_usg_pct": jogador.get("USG_PCT")
+        })
+    return lista_clutch
+
+================================================================================
+ARQUIVO: .\components\charts.py
+================================================================================
+
+import plotly.graph_objects as go
+import streamlit as st
+import plotly.express as px
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+
+
+def grafico_percentis_snapshot(usg_percentil, ts_percentil):
+    """Gera um gráfico horizontal de percentis minimalista e moderno."""
+    
+    categorias = ['Eficiência (TS%)', 'Volume Ofensivo (USG%)']
+    valores = [ts_percentil or 0, usg_percentil or 0]
+
+    # Lógica de cores inteligente (Vermelho -> Laranja -> Azul Claro -> Azul Escuro)
+    cores = []
+    for val in valores:
+        if val >= 80: cores.append('#1D428A')     # Elite (Azul NBA)
+        elif val >= 50: cores.append('#4B92FF')   # Acima da média
+        elif val >= 30: cores.append('#FFA500')   # Abaixo da média (Alerta)
+        else: cores.append('#FF4B4B')             # Ruim (Vermelho)
+
+    fig = go.Figure(go.Bar(
+        x=valores,
+        y=categorias,
+        orientation='h',
+        marker_color=cores,
+        text=[f"{v}º Percentil" if v else "N/A" for v in valores],
+        textposition='inside',
+        insidetextanchor='middle',
+        insidetextfont=dict(color='white', size=14, family="Arial Black")
+    ))
+
+    # Limpando o fundo para ficar elegante (sem linhas de grade feias)
+    fig.update_layout(
+        xaxis=dict(range=[0, 100], showgrid=False, zeroline=False, visible=False),
+        yaxis=dict(showgrid=False, zeroline=False, tickfont=dict(size=14, color="#FAFAFA")),
+        margin=dict(l=0, r=0, t=10, b=0), # Margens super apertadas
+        height=120,
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        dragmode=False # Impede o usuário de dar zoom sem querer
+    )
+    return fig
+
+def grafico_scatter_ataque(df, x_col, y_col, titulo, subtitulo, jogador_destaque=None):
+    """Cria um gráfico de dispersão com destaque dinâmico para o jogador selecionado."""
+    
+    # Configurar cores: cinza escuro para a liga, Azul NBA para o jogador em destaque
+    df['Cor'] = 'Liga'
+    df['Tamanho'] = 8
+    
+    if jogador_destaque:
+        df.loc[df['nome_completo'] == jogador_destaque, 'Cor'] = 'Selecionado'
+        df.loc[df['nome_completo'] == jogador_destaque, 'Tamanho'] = 20 # Deixa o ponto bem maior!
+
+    fig = px.scatter(
+        df,
+        x=x_col,
+        y=y_col,
+        hover_name="nome_completo",
+        hover_data={x_col: True, y_col: True, 'Cor': False, 'Tamanho': False},
+        color='Cor',
+        color_discrete_map={'Liga': '#444444', 'Selecionado': '#1D428A'},
+        size='Tamanho'
+    )
+
+    # Estilização limpa e moderna
+    fig.update_layout(
+        title=dict(text=f"<b>{titulo}</b><br><span style='font-size:12px;color:gray'>{subtitulo}</span>"),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#FAFAFA'),
+        xaxis=dict(showgrid=True, gridcolor='#333333', title=x_col),
+        yaxis=dict(showgrid=True, gridcolor='#333333', title=y_col),
+        showlegend=False,
+        margin=dict(l=20, r=20, t=60, b=20)
+    )
+    return fig
+
+def grafico_quadrantes_times(dados_times):
+    """Gera o Scatter Plot de Landscape da liga."""
+    df = pd.DataFrame(dados_times)
+    if df.empty:
+        return None
+
+    # Calculamos a média da liga para desenhar a cruz no meio do gráfico
+    avg_off = df['off_rating'].mean()
+    avg_def = df['def_rating'].mean()
+
+    fig = px.scatter(
+        df,
+        x='off_rating',
+        y='def_rating',
+        text='nome_time',
+        hover_data=['vitorias', 'derrotas', 'net_rating', 'pace'],
+        labels={
+            'off_rating': 'Ataque (Pts marcados a cada 100 posses)',
+            'def_rating': 'Defesa (Pts sofridos a cada 100 posses)'
+        },
+        title='League Landscape: Identidade e Eficiência'
+    )
+
+    # O SEGREDO ANALÍTICO: Inverter o eixo Y. 
+    # Em Def Rating, números menores são melhores (sofreu menos pontos).
+    # Invertendo, a melhor defesa fica no TOPO do gráfico.
+    fig.update_yaxes(autorange="reversed")
+
+    # Adiciona as linhas pontilhadas cinzas cruzando as médias
+    fig.add_hline(y=avg_def, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.add_vline(x=avg_off, line_dash="dash", line_color="gray", opacity=0.5)
+
+    # Melhora o design das bolinhas e ajusta o texto para não ficar em cima da bolinha
+    fig.update_traces(
+        textposition='top center', 
+        textfont=dict(size=10, color="lightgray"),
+        marker=dict(size=12, color='#1f77b4', line=dict(width=1, color='DarkSlateGrey'))
+    )
+    
+    # Deixa o fundo transparente para combinar com o Dark Mode do Streamlit
+    fig.update_layout(
+        height=650, # Deixa o gráfico bem grande e imponente
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)'
+    )
+
+    return fig
+
+def grafico_mapa_arremessos(df_shots):
+    """Desenha a meia-quadra da NBA e plota o mapa de calor de arremessos."""
+    if df_shots.empty:
+        return None
+        
+    fig = go.Figure()
+    
+    # Separar acertos (1) e erros (0)
+    acertos = df_shots[df_shots['SHOT_MADE_FLAG'] == 1]
+    erros = df_shots[df_shots['SHOT_MADE_FLAG'] == 0]
+    
+    # Plotar Erros (X vermelho transparente)
+    fig.add_trace(go.Scatter(
+        x=erros['LOC_X'], y=erros['LOC_Y'],
+        mode='markers', name='Erros',
+        marker=dict(color='rgba(255, 0, 0, 0.3)', size=7, symbol='x'),
+        hovertemplate="%{customdata[0]}<br>Distância: %{customdata[1]} ft<extra></extra>",
+        customdata=erros[['ACTION_TYPE', 'SHOT_DISTANCE']]
+    ))
+    
+    # Plotar Acertos (Bolinha verde sólida)
+    fig.add_trace(go.Scatter(
+        x=acertos['LOC_X'], y=acertos['LOC_Y'],
+        mode='markers', name='Acertos',
+        marker=dict(color='rgba(0, 255, 0, 0.7)', size=8, symbol='circle', line=dict(color='black', width=1)),
+        hovertemplate="%{customdata[0]}<br>Distância: %{customdata[1]} ft<extra></extra>",
+        customdata=acertos[['ACTION_TYPE', 'SHOT_DISTANCE']]
+    ))
+    
+    # A Mágica Matemática: Desenhar a quadra da NBA via SVG Paths
+    shapes = [
+        dict(type="rect", x0=-250, y0=-47.5, x1=250, y1=422.5, line=dict(color="lightgray", width=1.5)), # Limites
+        dict(type="rect", x0=-80, y0=-47.5, x1=80, y1=143.5, line=dict(color="lightgray", width=1.5)), # Garrafão
+        dict(type="circle", x0=-60, y0=83.5, x1=60, y1=203.5, line=dict(color="lightgray", width=1.5)), # Lance Livre
+        dict(type="line", x0=-220, y0=-47.5, x1=-220, y1=92.5, line=dict(color="lightgray", width=1.5)), # 3pt Canto Esq
+        dict(type="line", x0=220, y0=-47.5, x1=220, y1=92.5, line=dict(color="lightgray", width=1.5)), # 3pt Canto Dir
+        dict(type="path", path="M -220 92.5 A 239 239 0 0 1 220 92.5", line=dict(color="lightgray", width=1.5)), # Arco 3pt
+        dict(type="circle", x0=-7.5, y0=-7.5, x1=7.5, y1=7.5, line=dict(color="#FF8C00", width=2)), # Aro Laranja
+        dict(type="line", x0=-30, y0=-7.5, x1=30, y1=-7.5, line=dict(color="lightgray", width=3)), # Tabela
+    ]
+    
+    # Limpar o fundo, esconder eixos reais e aplicar as linhas
+    fig.update_layout(
+        shapes=shapes,
+        xaxis=dict(range=[-250, 250], showgrid=False, zeroline=False, visible=False),
+        yaxis=dict(range=[-50, 422.5], showgrid=False, zeroline=False, visible=False),
+        height=700, width=800,
+        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=20, r=20, t=20, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+    )
+    return fig
+
+================================================================================
+ARQUIVO: .\data\db.py
+================================================================================
+
+import os
+import streamlit as st
+from supabase import create_client, Client
+from dotenv import load_dotenv
+
+# Carrega as variáveis do seu arquivo .env
+load_dotenv()
+
+# st.cache_resource garante que a conexão abra apenas 1 vez e fique na memória
+@st.cache_resource
+def init_connection() -> Client:
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        st.error("⚠️ Credenciais do Supabase não encontradas no arquivo .env!")
+        st.stop()
+    return create_client(url, key)
+
+# Objeto global para importar nos outros arquivos
+supabase = init_connection()
+
+================================================================================
+ARQUIVO: .\data\queries.py
+================================================================================
+
+import streamlit as st
+import pandas as pd
+import io
+from data.db import supabase
+
+@st.cache_data(ttl=3600)
+def obter_lista_jogadores():
+    try:
+        resposta = supabase.table("jogadores").select("nome_completo").execute()
+        jogadores = [linha['nome_completo'] for linha in resposta.data if linha.get('nome_completo')]
+        return sorted(jogadores)
+    except Exception as e:
+        return ["Erro ao carregar"]
+
+def obter_perfil_jogador(nome_jogador):
+    try:
+        resposta = supabase.table("jogadores").select("*").eq("nome_completo", nome_jogador).execute()
+        if resposta.data: return resposta.data[0]
+        return None
+    except Exception: return None
+
+# 🧠 O CÉREBRO DO FILTRO: Traz tudo se for "Ambos", ou filtra se for específico
+def aplicar_filtro(query, tipo):
+    if tipo != "Regular Season + Playoffs":
+        return query.eq("tipo_temporada", tipo)
+    return query
+
+@st.cache_data(ttl=300)
+def obter_estatisticas_resumo(jogador_id, temporada, tipo="Regular Season"):
+    try:
+        q_trad = supabase.table("estatisticas_temporada").select("*").eq("jogador_id", jogador_id).eq("temporada", temporada)
+        q_adv = supabase.table("stats_avancadas").select("*").eq("jogador_id", jogador_id).eq("temporada", temporada)
+        
+        resp_trad = aplicar_filtro(q_trad, tipo).execute()
+        resp_adv = aplicar_filtro(q_adv, tipo).execute()
+        
+        stats = {}
+        if resp_trad.data:
+            df = pd.DataFrame(resp_trad.data)
+            stats['jogos_disputados'] = int(df['jogos_disputados'].sum())
+            stats['pontos_totais'] = int(df['pontos_totais'].sum())
+            stats['rebotes_totais'] = int(df['rebotes_totais'].sum())
+            stats['assistencias_totais'] = int(df['assistencias_totais'].sum())
+        if resp_adv.data:
+            df = pd.DataFrame(resp_adv.data)
+            stats['ts_pct'] = df['ts_pct'].mean()
+            stats['usg_pct'] = df['usg_pct'].mean()
+            stats['net_rating'] = df['net_rating'].mean()
+            stats['off_rating'] = df['off_rating'].mean()
+            stats['def_rating'] = df['def_rating'].mean()
+            stats['pie'] = df['pie'].mean()
+            stats['ast_pct'] = df['ast_pct'].mean()
+            stats['pace'] = df['pace'].mean()
+        return stats
+    except Exception: return {}
+    
+@st.cache_data(ttl=3600)
+def obter_dados_liga_avancados(temporada, tipo="Regular Season"):
+    try:
+        q = supabase.table("stats_avancadas").select("jogador_id, usg_pct, ts_pct").eq("temporada", temporada)
+        resp = aplicar_filtro(q, tipo).execute()
+        if not resp.data: return []
+        df = pd.DataFrame(resp.data)
+        return df.groupby("jogador_id").mean().reset_index().to_dict('records')
+    except Exception: return []
+
+@st.cache_data(ttl=3600)
+def obter_dados_completos_liga(temporada, tipo="Regular Season"):
+    try:
+        q_trad = supabase.table("estatisticas_temporada").select("jogador_id, jogos_disputados, pontos_totais, rebotes_totais, assistencias_totais").eq("temporada", temporada)
+        q_adv = supabase.table("stats_avancadas").select("jogador_id, ts_pct, usg_pct, net_rating, efg_pct, ast_pct").eq("temporada", temporada)
+        
+        df_trad = pd.DataFrame(aplicar_filtro(q_trad, tipo).execute().data)
+        df_adv = pd.DataFrame(aplicar_filtro(q_adv, tipo).execute().data)
+        
+        if df_trad.empty or df_adv.empty: return pd.DataFrame()
+        
+        df_trad = df_trad.groupby("jogador_id").sum().reset_index()
+        df_adv = df_adv.groupby("jogador_id").mean().reset_index()
+        
+        df = pd.merge(df_trad, df_adv, on="jogador_id", how="inner")
+        df = df[df['jogos_disputados'] > 0].copy()
+        df['PPG'] = df['pontos_totais'] / df['jogos_disputados']
+        df['RPG'] = df['rebotes_totais'] / df['jogos_disputados']
+        df['APG'] = df['assistencias_totais'] / df['jogos_disputados']
+        return df
+    except Exception: return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def obter_dados_graficos_ataque(temporada, tipo="Regular Season"):
+    try:
+        q_trad = supabase.table("estatisticas_temporada").select("jogador_id, jogos_disputados, pontos_totais").eq("temporada", temporada)
+        q_adv = supabase.table("stats_avancadas").select("jogador_id, ts_pct, usg_pct").eq("temporada", temporada)
+        df_jog = pd.DataFrame(supabase.table("jogadores").select("id, nome_completo").execute().data)
+
+        df_trad = pd.DataFrame(aplicar_filtro(q_trad, tipo).execute().data)
+        df_adv = pd.DataFrame(aplicar_filtro(q_adv, tipo).execute().data)
+
+        if df_trad.empty or df_adv.empty or df_jog.empty: return pd.DataFrame()
+
+        df_trad = df_trad.groupby("jogador_id").sum().reset_index()
+        df_adv = df_adv.groupby("jogador_id").mean().reset_index()
+
+        df = pd.merge(df_trad, df_adv, on="jogador_id")
+        df = pd.merge(df, df_jog, left_on="jogador_id", right_on="id")
+
+        df = df[df['jogos_disputados'] > 0].copy()
+        df['PPG'] = round(df['pontos_totais'] / df['jogos_disputados'], 1)
+        df['TS%'] = round(df['ts_pct'] * 100, 1)
+        df['USG%'] = round(df['usg_pct'] * 100, 1)
+        return df
+    except Exception: return pd.DataFrame()
+    
+@st.cache_data(ttl=300)
+def obter_estatisticas_defesa(jogador_id, temporada, tipo="Regular Season"):
+    try:
+        q = supabase.table("stats_defesa").select("*").eq("jogador_id", jogador_id).eq("temporada", temporada)
+        resp = aplicar_filtro(q, tipo).execute()
+        if not resp.data: return {}
+        
+        df = pd.DataFrame(resp.data)
+        return {
+            'roubos_totais': int(df['roubos_totais'].sum()),
+            'tocos_totais': int(df['tocos_totais'].sum()),
+            'deflections': int(df['deflections'].sum())
+        }
+    except Exception: return {}
+    
+@st.cache_data(ttl=300)
+def obter_dados_times(temporada, tipo="Regular Season"):
+    try:
+        q = supabase.table("stats_times").select("*").eq("temporada", temporada)
+        resp = aplicar_filtro(q, tipo).execute()
+        if not resp.data: return []
+        
+        df = pd.DataFrame(resp.data)
+        df_agg = df.groupby("nome_time").agg({
+            'vitorias': 'sum', 'derrotas': 'sum', 'jogos': 'sum',
+            'off_rating': 'mean', 'def_rating': 'mean', 'net_rating': 'mean', 'pace': 'mean'
+        }).reset_index()
+        return df_agg.to_dict('records')
+    except Exception: return []
+
+# =========================================================================
+# AS DUAS FUNÇÕES ABAIXO FORAM COMPLETAMENTE REFATORADAS PARA USAR SUPABASE
+# =========================================================================
+
+@st.cache_data(ttl=3600)
+def obter_mapa_arremessos_jogador(jogador_id, temporada, tipo_temporada="Regular Season"):
+    """Busca o mapa de arremessos instantaneamente no Supabase Storage (Buckets)."""
+    def buscar_por_tipo(tipo_nba):
+        caminho = f"{temporada}/{tipo_nba}/{jogador_id}.parquet"
+        try:
+            bytes_arquivo = supabase.storage.from_("shotcharts").download(caminho)
+            df = pd.read_parquet(io.BytesIO(bytes_arquivo))
+            
+            # === MÁGICA MATEMÁTICA PARA RECRIAR A COLUNA ===
+            # Na NBA, o aro fica no centro (0,0) e cada 10 unidades de LOC equivalem a 1 pé (foot).
+            # Usamos Pitágoras (a² + b² = c²) para achar a distância exata do arremesso!
+            if not df.empty and 'SHOT_DISTANCE' not in df.columns:
+                df['SHOT_DISTANCE'] = ((df['LOC_X']**2 + df['LOC_Y']**2) ** 0.5 / 10).round().astype(int)
+            # ===============================================
+            
+            return df
+        except Exception:
+            return pd.DataFrame()
+
+    if tipo_temporada == "Regular Season + Playoffs":
+        df_reg = buscar_por_tipo("Regular Season")
+        df_play = buscar_por_tipo("Playoffs")
+        df_completo = pd.concat([df_reg, df_play], ignore_index=True)
+        return df_completo if not df_completo.empty else pd.DataFrame()
+    else:
+        return buscar_por_tipo(tipo_temporada)
+
+@st.cache_data(ttl=86400)
+def obter_timeline_carreira(jogador_id):
+    """Busca a carreira INTEIRA do jogador direto da nossa tabela Postgres no Supabase."""
+    try:
+        resp = supabase.table("career_stats").select("*").eq("player_id", jogador_id).execute()
+        if not resp.data:
+            return pd.DataFrame(), pd.DataFrame()
+            
+        df = pd.DataFrame(resp.data)
+        
+        # Filtra e organiza os DataFrames exatamente do jeito que a sua interface espera
+        df_reg = df[df['tipo_temporada'] == 'Regular Season'].copy()
+        df_play = df[df['tipo_temporada'] == 'Playoffs'].copy()
+        
+        # Ordena pela temporada para o gráfico ficar bonito
+        df_reg = df_reg.sort_values(by="season_id")
+        df_play = df_play.sort_values(by="season_id")
+        
+        return df_reg, df_play
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame()
+    
+# =========================================================================
+# NOVAS FUNÇÕES PARA O ÉPICO 2: ECOSSISTEMA DE TIMES
+# =========================================================================
+
+# Dicionário de conversão para cruzar o nome do time com a sigla dos jogadores
+TEAM_MAPPING = {
+    "Atlanta Hawks": "ATL", "Boston Celtics": "BOS", "Brooklyn Nets": "BKN",
+    "Charlotte Hornets": "CHA", "Chicago Bulls": "CHI", "Cleveland Cavaliers": "CLE",
+    "Dallas Mavericks": "DAL", "Denver Nuggets": "DEN", "Detroit Pistons": "DET",
+    "Golden State Warriors": "GSW", "Houston Rockets": "HOU", "Indiana Pacers": "IND",
+    "LA Clippers": "LAC", "Los Angeles Lakers": "LAL", "Memphis Grizzlies": "MEM",
+    "Miami Heat": "MIA", "Milwaukee Bucks": "MIL", "Minnesota Timberwolves": "MIN",
+    "New Orleans Pelicans": "NOP", "New York Knicks": "NYK", "Oklahoma City Thunder": "OKC",
+    "Orlando Magic": "ORL", "Philadelphia 76ers": "PHI", "Phoenix Suns": "PHX",
+    "Portland Trail Blazers": "POR", "Sacramento Kings": "SAC", "San Antonio Spurs": "SAS",
+    "Toronto Raptors": "TOR", "Utah Jazz": "UTA", "Washington Wizards": "WAS"
+}
+
+@st.cache_data(ttl=3600)
+def obter_lista_times(temporada):
+    """Busca os times únicos disponíveis na temporada selecionada."""
+    try:
+        resp = supabase.table("stats_times").select("nome_time").eq("temporada", temporada).execute()
+        times = list(set([linha['nome_time'] for linha in resp.data if linha.get('nome_time')]))
+        return sorted(times)
+    except Exception:
+        # Fallback de segurança usando nosso próprio dicionário
+        return sorted(list(TEAM_MAPPING.keys()))
+
+@st.cache_data(ttl=3600)
+def obter_identidade_time(nome_time, temporada, tipo="Regular Season"):
+    """Busca o DNA e as métricas do time na tabela stats_times."""
+    try:
+        q = supabase.table("stats_times").select("*").eq("nome_time", nome_time).eq("temporada", temporada)
+        resp = aplicar_filtro(q, tipo).execute()
+        if resp.data:
+            return resp.data[0]
+        return None
+    except Exception: return None
+
+@st.cache_data(ttl=3600)
+def obter_elenco_time(nome_time, temporada, tipo="Regular Season"):
+    """Cruza a tabela de temporada e jogadores para montar a tabela de rotação avançada (Sem Duplicatas)."""
+    abrev = TEAM_MAPPING.get(nome_time)
+    if not abrev: return pd.DataFrame()
+    
+    try:
+        q_trad = supabase.table("estatisticas_temporada").select("jogador_id, jogos_disputados, pontos_totais, rebotes_totais, assistencias_totais").eq("temporada", temporada).eq("time_abrev", abrev)
+        resp_trad = aplicar_filtro(q_trad, tipo).execute()
+        
+        q_adv = supabase.table("stats_avancadas").select("jogador_id, ts_pct, usg_pct, net_rating").eq("temporada", temporada)
+        resp_adv = aplicar_filtro(q_adv, tipo).execute()
+        
+        if not resp_trad.data: return pd.DataFrame()
+        
+        df_trad = pd.DataFrame(resp_trad.data)
+        df_adv = pd.DataFrame(resp_adv.data) if resp_adv.data else pd.DataFrame()
+        
+        ids_jogadores = df_trad['jogador_id'].tolist()
+        resp_jog = supabase.table("jogadores").select("id, nome_completo").in_("id", ids_jogadores).execute()
+        df_jog = pd.DataFrame(resp_jog.data) if resp_jog.data else pd.DataFrame()
+        
+        if not df_jog.empty:
+            # CORREÇÃO: Limpa qualquer duplicata residual do banco antes do cruzamento
+            df_trad = df_trad.drop_duplicates(subset=['jogador_id'])
+            df_adv = df_adv.drop_duplicates(subset=['jogador_id'])
+            df_jog = df_jog.drop_duplicates(subset=['id'])
+
+            df = pd.merge(df_trad, df_jog, left_on="jogador_id", right_on="id")
+            if not df_adv.empty:
+                df = pd.merge(df, df_adv, on="jogador_id", how="left")
+                
+            df = df[df['jogos_disputados'] > 0]
+            df['PPG'] = round(df['pontos_totais'] / df['jogos_disputados'], 1)
+            df['RPG'] = round(df['rebotes_totais'] / df['jogos_disputados'], 1)
+            df['APG'] = round(df['assistencias_totais'] / df['jogos_disputados'], 1)
+            
+            return df.sort_values(by="PPG", ascending=False).reset_index(drop=True)
+        return pd.DataFrame()
+    except Exception: return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def obter_momento_recente(nome_time, temporada):
+    """Busca os números dos últimos 10 jogos diretamente da NBA API, com segurança."""
+    from nba_api.stats.endpoints import leaguedashplayerstats
+    abrev = TEAM_MAPPING.get(nome_time)
+    
+    # Se a temporada for a atual (26-27) e ainda não tiver começado/não tiver 10 jogos, ou se o time não existir
+    if not abrev or temporada == "2026-27":
+        return None
+        
+    try:
+        # Puxa a liga inteira nos últimos 10 jogos em 1 único request
+        resp = leaguedashplayerstats.LeagueDashPlayerStats(
+            season=temporada, 
+            last_n_games=10,
+            measure_type_detailed_defense="Base"
+        ).get_data_frames()[0]
+        
+        # Filtra apenas o time selecionado
+        df_time = resp[resp['TEAM_ABBREVIATION'] == abrev].copy()
+        if df_time.empty: return None
+        
+        # Filtra quem jogou pelo menos 5 dos últimos 10 jogos para ser uma amostra válida
+        df_time = df_time[df_time['GP'] >= 5].copy()
+        if df_time.empty: return None
+        
+        # Calcula a média de pontos recente
+        df_time['PPG_RECENTE'] = df_time['PTS'] / df_time['GP']
+        
+        # Encontra o jogador com maior pontuação no recorte
+        destaque = df_time.sort_values(by="PPG_RECENTE", ascending=False).iloc[0]
+        
+        return {
+            "nome": destaque['PLAYER_NAME'],
+            "jogos": int(destaque['GP']),
+            "ppg": round(destaque['PPG_RECENTE'], 1),
+            "fg_pct": round(destaque['FG_PCT'] * 100, 1),
+            "plus_minus": round(destaque['PLUS_MINUS'] / destaque['GP'], 1) # Saldo de pontos do time com ele em quadra
+        }
+    except Exception as e:
+        return None # Se a API falhar ou não houver dados, retorna None para a página não quebrar
+
+
+@st.cache_data(ttl=3600)
+def obter_benchmarking_jogador(jogador_id, temporada, tipo="Regular Season"):
+    """Calcula o percentil e a classificação do jogador em relação ao resto da liga."""
+    df_liga = obter_dados_completos_liga(temporada, tipo)
+    if df_liga.empty: return None
+
+    # Filtro: Ignora quem jogou menos de 10 jogos para não distorcer as médias da liga
+    df_valida = df_liga[df_liga['jogos_disputados'] >= 10].copy()
+    if df_valida.empty or jogador_id not in df_valida['jogador_id'].values: return None
+
+    jogador_stats = df_valida[df_valida['jogador_id'] == jogador_id].iloc[0]
+    
+    benchmarks = {}
+    metricas = {
+        'PPG': ('Pontos', False), 'RPG': ('Rebotes', False), 'APG': ('Assistências', False), 
+        'ts_pct': ('True Shooting', True), 'usg_pct': ('Usage Rate', True), 
+        'net_rating': ('Net Rating', False), 'pie': ('PIE', True), 'ast_pct': ('AST%', True)
+    }
+    
+    for coluna, (nome_amigavel, is_pct) in metricas.items():
+        if coluna not in df_valida.columns: continue
+        
+        valor = jogador_stats[coluna]
+        media_liga = df_valida[coluna].mean()
+        percentil = (df_valida[coluna] < valor).mean() * 100
+        
+        if percentil >= 90: classif, cor = "🌟 Elite", "normal"
+        elif percentil >= 75: classif, cor = "📈 Acima Média", "normal"
+        elif percentil >= 40: classif, cor = "📊 Na Média", "off"
+        else: classif, cor = "📉 Abaixo Média", "inverse"
+            
+        benchmarks[coluna] = {
+            "nome": nome_amigavel,
+            "valor": valor * 100 if is_pct else valor,
+            "media_liga": media_liga * 100 if is_pct else media_liga,
+            "percentil": percentil,
+            "classificacao": classif,
+            "cor": cor,
+            "is_pct": is_pct
+        }
+    return benchmarks
+
+================================================================================
+ARQUIVO: .\pages\0_home.py
+================================================================================
+
+import streamlit as st
+
+st.title("🏀 NBA Advanced Analytics Hub")
+st.markdown("### Bem-vindo à plataforma definitiva de inteligência, tracking e estatísticas avançadas da NBA.")
+st.divider()
+
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.markdown("""
+    Esta aplicação foi desenvolvida sob rigorosos padrões de **Engenharia de Dados e Análise Esportiva**, integrando dados oficiais da NBA API e Supabase para entregar insights profundos que vão muito além do box-score tradicional.
+    
+    ### 🚀 O que você encontra por aqui:
+    * **📊 Overview & Player Snapshot:** Cartões de KPIs avançados (True Shooting, Usage Rate, Net Rating, PIE), **Arquétipos Estilo NBA 2K**, feed de notícias em tempo real e linha do tempo completa de carreira com logotipos das franquias.
+    * **🎯 Offensive & Defensive Profiles:** Gráficos de dispersão de volume e eficiência, além de métricas de esforço (*Hustle* e *Deflections*).
+    * **🗺️ Shot Charts:** Mapeamento espacial interativo de arremessos em quadra.
+    * **⚔️ Player Comparison:** Confronto direto entre até 3 atletas ou versões históricas de um mesmo jogador (incluindo Playoffs).
+    * **🏀 Team Analytics:** Análise de sistema, ritmo (*Pace*) e quadrantes de eficiência da liga (*Contenders*, *Tiroteio*, *Trincheira* e *Loteria*).
+    """)
+
+with col2:
+    st.info("""
+    👈 **Como Começar:**
+    
+    1. Vá até a **barra lateral** à esquerda.
+    2. Selecione a **Temporada** desejada.
+    3. Escolha o **Tipo de Temporada** (Regular Season, Playoffs ou Ambos).
+    4. Selecione o **Jogador** que deseja analisar.
+    
+    Explore todas as abas no menu superior!
+    """)
+
+st.divider()
+st.markdown("*(Dica: Selecione um atleta na barra lateral e clique na aba **Overview** no menu superior para iniciar sua imersão analítica.)*")
+
+================================================================================
+ARQUIVO: .\pages\1_overview.py
+================================================================================
+
+import streamlit as st
+import pandas as pd
+from datetime import datetime
+from nba_api.stats.static import teams
+
+from data.queries import (
+    obter_perfil_jogador, obter_estatisticas_resumo, obter_dados_liga_avancados, 
+    obter_dados_completos_liga, obter_estatisticas_defesa, obter_timeline_carreira,
+    obter_benchmarking_jogador  # 👇 Importando o motor de benchmarking!
+)
+from utils.calculations import calcular_percentil, gerar_texto_snapshot, gerar_tabela_comparativa
+from components.charts import grafico_percentis_snapshot
+from utils.archetypes import classificar_arquetipo
+from utils.news import obter_noticias_jogador
+from utils.logos import obter_url_logo_time
+from utils.position_analyzer import analisar_perfil_posicional 
+
+jogador_nome = st.session_state.get('filtro_jogador')
+
+if not jogador_nome or jogador_nome == "Selecione um jogador...":
+    st.warning("👈 Por favor, selecione um jogador na barra lateral para começar.")
+    st.stop()
+
+perfil = obter_perfil_jogador(jogador_nome)
+
+if perfil:
+    jogador_id = perfil.get("id", "")
+    url_foto = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{jogador_id}.png"
+    
+    temporada_selecionada = st.session_state.get('filtro_temporada')
+    tipo_temporada = st.session_state.get('filtro_tipo_temporada', 'Regular Season')
+    
+    stats = obter_estatisticas_resumo(jogador_id, temporada_selecionada, tipo_temporada)
+    def_stats = obter_estatisticas_defesa(jogador_id, temporada_selecionada, tipo_temporada)
+    arquetipo = classificar_arquetipo(stats, def_stats)
+    perfil_tatico = analisar_perfil_posicional(perfil, stats)
+    
+    # ==========================================
+    # CABEÇALHO PREMIUM & ARQUÉTIPO
+    # ==========================================
+    col_foto, col_info = st.columns([1.5, 4])
+    
+    with col_foto:
+        st.image(url_foto, width=220)
+        
+    with col_info:
+        st.title(perfil.get("nome_completo", jogador_nome))
+        
+        # Badge de Arquétipo (2K Style)
+        if arquetipo:
+            badge_html = f"""
+            <div style="background: {arquetipo['cor']}; padding: 12px 20px; border-radius: 10px; color: white; display: inline-block; margin-bottom: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
+                <h3 style="margin: 0; font-size: 1.3rem; color: white; text-shadow: 1px 1px 2px rgba(0,0,0,0.3);">
+                    {arquetipo['icone']} {arquetipo['nome']}
+                </h3>
+                <p style="margin: 5px 0 0 0; font-size: 0.95rem; opacity: 0.95; line-height: 1.3;">
+                    {arquetipo['desc']}
+                </p>
+            </div>
+            """
+            st.markdown(badge_html, unsafe_allow_html=True)
+        
+        # ==========================================
+        # 🏀 BANNER DE FRANQUIA ATUAL EM DESTAQUE
+        # ==========================================
+        time_id_bruto = perfil.get("time_atual_id") or perfil.get("time_id") or perfil.get("team_id")
+        nome_do_time = "N/A"
+        logo_time_atual = obter_url_logo_time(time_id_bruto)
+        
+        if time_id_bruto and str(time_id_bruto).isdigit():
+            try:
+                time_info = teams.find_team_name_by_id(int(time_id_bruto))
+                if time_info: nome_do_time = time_info['full_name'] 
+            except Exception: nome_do_time = str(time_id_bruto) 
+        elif time_id_bruto:
+            nome_do_time = str(time_id_bruto)
+
+        logo_tag = f'<img src="{logo_time_atual}" width="42" style="margin-right: 15px; vertical-align: middle;" />' if logo_time_atual else ''
+        
+        banner_time_html = f"""
+        <div style="background: linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)); border-left: 5px solid #FF4B4B; border: 1px solid rgba(255,255,255,0.1); padding: 12px 20px; border-radius: 10px; margin-bottom: 15px; display: flex; align-items: center;">
+            {logo_tag}
+            <div>
+                <span style="font-size: 0.75rem; color: #aaa; text-transform: uppercase; letter-spacing: 1.5px; font-weight: bold;">Franquia Atual</span>
+                <h4 style="margin: 0; color: #FAFAFA; font-size: 1.25rem;">{nome_do_time}</h4>
+            </div>
+        </div>
+        """
+        st.markdown(banner_time_html, unsafe_allow_html=True)
+
+        posicao = perfil.get("posicao", "N/A")
+        camisa = perfil.get("camisa", "N/A")
+        pais = perfil.get("pais", "N/A")
+        altura = perfil.get("altura_pes", "N/A")
+        peso = perfil.get("peso_lbs", "N/A")
+        ano_draft = perfil.get("ano_draft", "N/A")
+        
+        data_nasc_str = perfil.get("data_nascimento", "")
+        idade = "N/A"
+        if data_nasc_str:
+            try:
+                nascimento = datetime.strptime(data_nasc_str[:10], "%Y-%m-%d")
+                hoje = datetime.now()
+                idade = hoje.year - nascimento.year - ((hoje.month, hoje.day) < (nascimento.month, nascimento.day))
+            except: pass
+        
+        st.markdown(f"**Camisa:** #{camisa} &nbsp;&nbsp;|&nbsp;&nbsp; **Posição Base:** {posicao} &nbsp;&nbsp;|&nbsp;&nbsp; **Idade:** {idade} anos")
+        st.markdown(f"**Físico:** {altura} ft, {peso} lbs &nbsp;&nbsp;|&nbsp;&nbsp; **Draft:** {ano_draft} &nbsp;&nbsp;|&nbsp;&nbsp; **País:** {pais}")
+        st.caption(f"Analisando dados da temporada **{temporada_selecionada}** ({tipo_temporada})")
+        
+    st.divider()
+
+    # ==========================================
+    # 🧬 PERFIL TÁTICO & VERSATILIDADE POSICIONAL
+    # ==========================================
+    with st.expander("🧬 Análise de Papel Tático e Versatilidade Posicional", expanded=True):
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            st.markdown(f"**Papel em Quadra (Role):** `{perfil_tatico['papel']}`")
+            st.markdown(f"**Posição Ideal no Sistema:** `{perfil_tatico.get('posicao_ideal', 'N/A')}`")
+        with col_t2:
+            st.markdown(f"**Grau de Versatilidade:** `{perfil_tatico['versatilidade']}`")
+        
+        st.markdown(f"**Impacto Dominante:** {perfil_tatico.get('dominancia', '')}")
+    
+    st.divider()
+    
+    # ==========================================
+    # SEÇÃO DE ESTATÍSTICAS E KPIS COM BENCHMARKING
+    # ==========================================
+    st.subheader("📊 Player Snapshot & Benchmarking")
+    st.markdown("O **Percentil** indica a porcentagem da liga que este jogador supera. Mínimo de 10 jogos disputados para contextualização.")
+    
+    benchmarks = obter_benchmarking_jogador(jogador_id, temporada_selecionada, tipo_temporada)
+    
+    if benchmarks and 'PPG' in benchmarks:
+        col1, col2, col3, col4 = st.columns(4)
+        
+        def render_metric(coluna_st, bm_key):
+            if bm_key in benchmarks:
+                bm = benchmarks[bm_key]
+                sufixo = "%" if bm['is_pct'] else ""
+                coluna_st.metric(bm['nome'], f"{bm['valor']:.1f}{sufixo}", bm['classificacao'], delta_color=bm['cor'])
+                coluna_st.caption(f"Liga: {bm['media_liga']:.1f}{sufixo} | Perc: {bm['percentil']:.0f}")
+
+        with col1:
+            render_metric(st, 'PPG')
+            render_metric(st, 'usg_pct')
+            
+        with col2:
+            render_metric(st, 'RPG')
+            render_metric(st, 'ts_pct')
+            
+        with col3:
+            render_metric(st, 'APG')
+            render_metric(st, 'net_rating')
+            
+        with col4:
+            render_metric(st, 'pie')
+            render_metric(st, 'ast_pct')
+            
+    else:
+        st.warning("O jogador ainda não atingiu o mínimo de 10 jogos nesta temporada para gerar o benchmarking de liga. Mostrando dados brutos:")
+        # Fallback para os dados antigos caso o cara tenha menos de 10 jogos
+        if stats:
+            jogos = stats.get("jogos_disputados", 0)
+            if jogos > 0:
+                ppg = round(stats.get("pontos_totais", 0) / jogos, 1)
+                rpg = round(stats.get("rebotes_totais", 0) / jogos, 1)
+                apg = round(stats.get("assistencias_totais", 0) / jogos, 1)
+            else: ppg = rpg = apg = "N/A"
+            ts_pct = f"{round(stats.get('ts_pct', 0) * 100, 1)}%" 
+            usg_pct = f"{round(stats.get('usg_pct', 0) * 100, 1)}%" 
+            net_rating = round(stats.get("net_rating", 0), 1)
+            
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("PPG", ppg)
+            col1.metric("USG%", usg_pct)
+            col2.metric("RPG", rpg)
+            col2.metric("TS%", ts_pct)
+            col3.metric("APG", apg)
+            col3.metric("Net Rating", net_rating)
+            col4.metric("PIE", f"{round(stats.get('pie', 0) * 100, 1)}%")
+            col4.metric("AST%", f"{round(stats.get('ast_pct', 0) * 100, 1)}%")
+
+    st.divider()
+    
+    # ==========================================
+    # CONFRONTO CONTRA A LIGA (SEU CÓDIGO ORIGINAL)
+    # ==========================================
+    st.markdown("### ⚖️ Player vs League Landscape")
+    
+    dados_liga = obter_dados_liga_avancados(temporada_selecionada, tipo_temporada)
+    df_liga_completo = obter_dados_completos_liga(temporada_selecionada, tipo_temporada)
+    
+    lista_usg_liga = [jog.get("usg_pct") for jog in dados_liga if jog.get("usg_pct") is not None]
+    lista_ts_liga = [jog.get("ts_pct") for jog in dados_liga if jog.get("ts_pct") is not None]
+    
+    usg_percentil = calcular_percentil(stats.get("usg_pct"), lista_usg_liga)
+    ts_percentil = calcular_percentil(stats.get("ts_pct"), lista_ts_liga)
+    texto_resumo = gerar_texto_snapshot(usg_percentil, ts_percentil)
+    
+    col_grafico, col_tabela = st.columns([1, 1.2])
+    
+    with col_grafico:
+        st.info(f"💡 {texto_resumo}")
+        if usg_percentil is not None and ts_percentil is not None:
+            fig_percentis = grafico_percentis_snapshot(usg_percentil, ts_percentil)
+            st.plotly_chart(fig_percentis, use_container_width=True, config={'displayModeBar': False})
+            
+    with col_tabela:
+        st.markdown("O **Percentil** indica onde o atleta está no ranqueamento da NBA (ex: 90º = melhor que 90% da liga).")
+        if not df_liga_completo.empty:
+            df_comparativo = gerar_tabela_comparativa(stats, df_liga_completo)
+            st.dataframe(df_comparativo, use_container_width=True, hide_index=True)
+        else:
+            st.warning("Não foi possível carregar as médias da liga.")
+            
+    st.divider()
+
+    # ==========================================
+    # 📰 FEED DE NOTÍCIAS EM TEMPO REAL
+    # ==========================================
+    st.markdown(f"### 📰 Latest News & Rumors: {jogador_nome}")
+    st.caption("Últimas atualizações, análises e movimentações coletadas em tempo real da web.")
+    
+    noticias = obter_noticias_jogador(jogador_nome)
+    
+    if noticias:
+        cols_news = st.columns(len(noticias) if len(noticias) <= 4 else 4)
+        for i, noticia in enumerate(noticias[:4]):
+            with cols_news[i]:
+                with st.container(border=True):
+                    st.markdown(f"**{noticia['titulo']}**")
+                    st.caption(f"📅 {noticia['data']}")
+                    st.markdown(f"[Ler matéria]({noticia['link']})")
+    else:
+        st.info("Nenhuma notícia recente encontrada no momento para este atleta.")
+
+    st.divider()
+
+    # ==========================================
+    # ⏳ TIMELINE DE CARREIRA & FRANQUIAS
+    # ==========================================
+    with st.expander("⏳ Ver Histórico Completo de Carreira (Franquias e Temporadas Anteriores)", expanded=False):
+        with st.spinner("Carregando linha do tempo da carreira..."):
+            df_reg, df_play = obter_timeline_carreira(jogador_id)
+        
+        if not df_reg.empty:
+            # CORREÇÃO: Força as colunas do Supabase para MAIÚSCULAS para manter compatibilidade
+            df_reg.columns = df_reg.columns.str.upper()
+            if not df_play.empty:
+                df_play.columns = df_play.columns.str.upper()
+
+            df_times_unicos = df_reg[df_reg['TEAM_ABBREVIATION'] != 'TOT'].copy()
+            times_passados = df_times_unicos['TEAM_ABBREVIATION'].unique()
+            
+            st.markdown("**Franquias Representadas na Carreira:**")
+            cols_teams = st.columns(len(times_passados) if len(times_passados) <= 6 else 6)
+            
+            for idx, time_abrev in enumerate(times_passados):
+                col_idx = idx % 6
+                logo_url_franquia = obter_url_logo_time(time_abrev)
+                logo_html = f'<img src="{logo_url_franquia}" width="38" style="margin-bottom: 6px;"/>' if logo_url_franquia else ''
+                
+                with cols_teams[col_idx]:
+                    st.markdown(f"""
+                    <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); padding: 10px; border-radius: 8px; text-align: center; margin-bottom: 10px;">
+                        {logo_html}
+                        <h4 style="margin: 0; color: #FAFAFA; font-size: 0.85rem;">{time_abrev}</h4>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            st.markdown("##### 📈 Temporada Regular (Carreira Inteira)")
+            df_exibicao = df_reg[['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PTS', 'AST', 'REB']].copy()
+            df_exibicao['PPG'] = (df_exibicao['PTS'] / df_exibicao['GP']).round(1)
+            df_exibicao['APG'] = (df_exibicao['AST'] / df_exibicao['GP']).round(1)
+            df_exibicao['RPG'] = (df_exibicao['REB'] / df_exibicao['GP']).round(1)
+            df_exibicao = df_exibicao[['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PPG', 'RPG', 'APG']]
+            df_exibicao.columns = ['Temporada', 'Time', 'Jogos', 'PPG', 'RPG', 'APG']
+            st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
+
+            if not df_play.empty:
+                st.markdown("##### 💍 Playoffs (Carreira Inteira)")
+                df_play_ex = df_play[['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PTS', 'AST', 'REB']].copy()
+                df_play_ex['PPG'] = (df_play_ex['PTS'] / df_play_ex['GP']).round(1)
+                df_play_ex['APG'] = (df_play_ex['AST'] / df_play_ex['GP']).round(1)
+                df_play_ex['RPG'] = (df_play_ex['REB'] / df_play_ex['GP']).round(1)
+                df_play_ex = df_play_ex[['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PPG', 'RPG', 'APG']]
+                df_play_ex.columns = ['Temporada', 'Time', 'Jogos', 'PPG', 'RPG', 'APG']
+                st.dataframe(df_play_ex, use_container_width=True, hide_index=True)
+        else:
+            st.warning("Histórico de carreira indisponível.")
+
+================================================================================
+ARQUIVO: .\pages\2_offense.py
+================================================================================
+
+import streamlit as st
+from data.queries import obter_dados_graficos_ataque
+from components.charts import grafico_scatter_ataque
+
+st.title("🎯 Offensive Profile")
+
+jogador_nome = st.session_state.get('filtro_jogador')
+temporada_selecionada = st.session_state.get('filtro_temporada')
+# 👇 1. Resgatando o tipo de temporada
+tipo_temporada = st.session_state.get('filtro_tipo_temporada', 'Regular Season')
+
+if not jogador_nome or jogador_nome == "Selecione um jogador...":
+    st.warning("👈 Por favor, selecione um jogador na barra lateral para começar.")
+    st.stop()
+
+# 👇 2. Adicionando o tipo de temporada no contexto visual
+st.markdown(f"Analisando a produção e eficiência de **{jogador_nome}** na temporada **{temporada_selecionada}** ({tipo_temporada}).")
+st.divider()
+
+# 👇 3. Passando a flag para a função da API do banco
+df_graficos = obter_dados_graficos_ataque(temporada_selecionada, tipo_temporada)
+
+if not df_graficos.empty:
+    # Filtro básico: Esconde jogadores com menos de 10 jogos para não quebrar o gráfico com anomalias (ex: cara que jogou 2 min, fez 2 pontos e tem 100% de TS%)
+    df_graficos = df_graficos[df_graficos['jogos_disputados'] >= 10] 
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Gráfico 1: Volume x Eficiência
+        fig1 = grafico_scatter_ataque(
+            df=df_graficos,
+            x_col="USG%",
+            y_col="TS%",
+            titulo="Volume vs Eficiência",
+            subtitulo="Usage Rate (USG%) × True Shooting (TS%)",
+            jogador_destaque=jogador_nome
+        )
+        st.plotly_chart(fig1, use_container_width=True, config={'displayModeBar': False})
+        
+        # O expander explicativo do PRD
+        with st.expander("💡 Como interpretar?"):
+            st.markdown("Jogadores mais à **direita** utilizam maior volume de posses do time. Jogadores mais **acima** possuem maior eficiência de pontuação.")
+
+    with col2:
+        # Gráfico 2: Produção x Eficiência
+        fig2 = grafico_scatter_ataque(
+            df=df_graficos,
+            x_col="PPG",
+            y_col="TS%",
+            titulo="Produção vs Eficiência",
+            subtitulo="Pontos por Jogo (PPG) × True Shooting (TS%)",
+            jogador_destaque=jogador_nome
+        )
+        st.plotly_chart(fig2, use_container_width=True, config={'displayModeBar': False})
+        
+        with st.expander("💡 Como interpretar?"):
+            st.markdown("Mostra produção e eficiência simultaneamente. O quadrante **superior direito** representa a elite da liga.")
+
+else:
+    st.error("Não foi possível carregar os dados para os gráficos.")
+
+================================================================================
+ARQUIVO: .\pages\3_defense.py
+================================================================================
+
+import streamlit as st
+from data.queries import obter_perfil_jogador, obter_estatisticas_resumo, obter_estatisticas_defesa
+
+st.title("🛡️ Defensive Profile")
+
+jogador_nome = st.session_state.get('filtro_jogador')
+temporada_selecionada = st.session_state.get('filtro_temporada')
+# 👇 1. Resgatando o filtro novo da sessão
+tipo_temporada = st.session_state.get('filtro_tipo_temporada', 'Regular Season')
+
+if not jogador_nome or jogador_nome == "Selecione um jogador...":
+    st.warning("👈 Por favor, selecione um jogador na barra lateral para começar.")
+    st.stop()
+
+# 👇 2. Atualizando o subtítulo para o usuário saber o que está olhando
+st.markdown(f"Métricas de esforço (Hustle) e impacto defensivo de **{jogador_nome}** na temporada **{temporada_selecionada}** ({tipo_temporada}).")
+st.divider()
+
+perfil = obter_perfil_jogador(jogador_nome)
+jogador_id = perfil.get("id") if perfil else None
+
+# 👇 3. Passando a variável tipo_temporada como terceiro parâmetro nas funções!
+stats_gerais = obter_estatisticas_resumo(jogador_id, temporada_selecionada, tipo_temporada)
+stats_defesa = obter_estatisticas_defesa(jogador_id, temporada_selecionada, tipo_temporada)
+
+if stats_defesa and stats_gerais:
+    jogos = stats_gerais.get("jogos_disputados", 0)
+    
+    if jogos > 0:
+        # Calculando as médias por jogo (Per Game)
+        spg = round(stats_defesa.get("roubos_totais", 0) / jogos, 1)
+        bpg = round(stats_defesa.get("tocos_totais", 0) / jogos, 1)
+        deflections = round(stats_defesa.get("deflections", 0) / jogos, 1)
+        
+        # O Def Rating a gente puxa da tabela avançada (já estava no stats_gerais)
+        def_rating = stats_gerais.get("def_rating", "N/A")
+        if isinstance(def_rating, float): def_rating = round(def_rating, 1)
+        
+        st.subheader("Atividade Defensiva (Per Game)")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Steals (Roubos)", spg, help="Roubos de bola por jogo.")
+        with col2:
+            st.metric("Blocks (Tocos)", bpg, help="Tocos por jogo.")
+        with col3:
+            st.metric("Deflections", deflections, help="Desvios de bola. Mede o quão ativo o jogador é com as mãos em linhas de passe ou contestando dribles.")
+        with col4:
+            st.metric("Defensive Rating", def_rating, help="Pontos sofridos pelo time a cada 100 posses com ele em quadra. Quanto menor, melhor.")
+            
+        st.divider()
+        
+        # Contexto Analítico
+        st.subheader("💡 O que a análise de vídeo e Hustle nos diz:")
+        if deflections >= 3.0:
+            st.success("Este jogador é um **pesadelo nas linhas de passe**. Uma média de mais de 3 deflections por jogo indica elite no quesito de esforço defensivo (Hustle) e antecipação.")
+        elif deflections >= 1.5:
+            st.info("O jogador apresenta uma **atividade defensiva sólida** e usa bem a envergadura para desviar posses de bola do adversário.")
+        else:
+            st.warning("O volume de *deflections* é baixo. Isso pode indicar uma defesa de menor impacto direto na bola (ou uma função de proteção de aro clássica, no caso de pivôs puros).")
+
+        st.markdown("""
+        **Nota sobre análise de defesa:** 
+        Métricas defensivas em banco de dados são notoriamente incompletas. Roubos e tocos não mostram contestação de arremessos, rotações corretas ou posicionamento (ajudas defensivas). Um jogador com pouco volume aqui ainda pode ser um excelente defensor de sistema.
+        """)
+        
+    else:
+        st.warning("O jogador ainda não disputou partidas nesta temporada.")
+else:
+    st.error(f"Dados defensivos indisponíveis para a temporada {temporada_selecionada}.")
+
+================================================================================
+ARQUIVO: .\pages\4_impact.py
+================================================================================
+
+import streamlit as st
+from data.queries import obter_estatisticas_resumo, obter_perfil_jogador
+
+st.title("⚡ Impact & Efficiency")
+
+jogador_nome = st.session_state.get('filtro_jogador')
+temporada_selecionada = st.session_state.get('filtro_temporada')
+# 👇 1. Resgatando o tipo de temporada
+tipo_temporada = st.session_state.get('filtro_tipo_temporada', 'Regular Season')
+
+if not jogador_nome or jogador_nome == "Selecione um jogador...":
+    st.warning("👈 Por favor, selecione um jogador na barra lateral para começar.")
+    st.stop()
+
+# 👇 2. Mostrando a flag na tela
+st.markdown(f"Avaliando o impacto global de **{jogador_nome}** na temporada **{temporada_selecionada}** ({tipo_temporada}).")
+st.divider()
+
+perfil = obter_perfil_jogador(jogador_nome)
+jogador_id = perfil.get("id") if perfil else None
+
+# 👇 3. Passando a flag para o banco de dados
+stats = obter_estatisticas_resumo(jogador_id, temporada_selecionada, tipo_temporada)
+
+if stats:
+    off_rating = stats.get("off_rating", "N/A")
+    if isinstance(off_rating, float): off_rating = round(off_rating, 1)
+    
+    def_rating = stats.get("def_rating", "N/A")
+    if isinstance(def_rating, float): def_rating = round(def_rating, 1)
+    
+    net_rating = stats.get("net_rating", "N/A")
+    if isinstance(net_rating, float): net_rating = round(net_rating, 1)
+    
+    # PIE geralmente vem quebrado (ex: 0.154), multiplicamos por 100
+    pie_raw = stats.get("pie")
+    pie = f"{round(pie_raw * 100, 1)}%" if pie_raw is not None else "N/A"
+    
+    pace = round(stats.get("pace", 0), 1) if stats.get("pace") else "N/A"
+
+    st.subheader("Métricas de Quadra (On-Court)")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric(
+            label="Offensive Rating (ORTG)", 
+            value=off_rating, 
+            help="Pontos que a equipe marca a cada 100 posses com o jogador em quadra."
+        )
+    with col2:
+        st.metric(
+            label="Defensive Rating (DRTG)", 
+            value=def_rating, 
+            help="Pontos que a equipe sofre a cada 100 posses com o jogador em quadra."
+        )
+    with col3:
+        st.metric(
+            label="Net Rating", 
+            value=net_rating,
+            delta=net_rating if isinstance(net_rating, (float, int)) else None,
+            delta_color="normal",
+            help="A diferença entre o ORTG e o DRTG. Valores positivos indicam que o time vence os minutos deste jogador."
+        )
+
+    with st.expander("💡 Como interpretar o Ratings?"):
+        st.markdown("""
+        - **ORTG / DRTG:** O basquete mede eficiência por posses de bola, não por minutos. Essas métricas mostram o placar da equipe a cada 100 posses de bola enquanto o jogador está jogando.
+        - **Net Rating:** É o saldo. Um Net Rating de `+5.0` significa que a equipe ganha do adversário por 5 pontos a cada 100 posses.
+        """)
+
+    st.divider()
+
+    st.subheader("Impacto Global")
+    col4, col5 = st.columns(2)
+    
+    with col4:
+        st.metric("PIE (Player Impact Estimate)", pie, help="Mede a porcentagem de eventos positivos da partida que foram produzidos por este jogador.")
+    with col5:
+        st.metric("Pace (Ritmo)", pace, help="Número estimado de posses de bola por 48 minutos. Jogadores com Pace alto jogam em transição rápida.")
+
+    with st.expander("💡 O que é PIE?"):
+        st.markdown("""
+        O **PIE** é a métrica oficial da NBA para medir o impacto consolidado. 
+        Um PIE acima de **10%** significa que o jogador tem uma contribuição acima da média em eventos importantes do jogo (pontos, rebotes, tocos, assistências, menos turnovers). Estrelas costumam operar na casa dos **15% a 20%**.
+        """)
+
+else:
+    st.error("Dados de impacto indisponíveis para esta temporada.")
+
+================================================================================
+ARQUIVO: .\pages\5_comparison.py
+================================================================================
+
+import streamlit as st
+import pandas as pd
+from data.queries import obter_lista_jogadores, obter_perfil_jogador, obter_estatisticas_resumo
+import plotly.graph_objects as go
+
+st.title("⚔️ Player Comparison")
+st.markdown("Compare até 3 jogadores ou diferentes versões do mesmo jogador ao longo dos anos e torneios.")
+st.divider()
+
+lista_jogadores = obter_lista_jogadores()
+temporadas = ["2026-27", "2025-26", "2024-25", "2023-24", "2022-23"]
+# 👇 1. Criamos a lista de opções de tipo de temporada para essa tela
+tipos_temporada = ["Regular Season", "Playoffs", "Regular Season + Playoffs"]
+
+# Cria 3 colunas para a seleção
+col_sel1, col_sel2, col_sel3 = st.columns(3)
+
+# Dicionário para guardar as escolhas e resultados
+comparacao = {}
+
+def renderizar_seletor(col, num_card):
+    with col:
+        st.subheader(f"Opção {num_card}")
+        jog = st.selectbox(f"Jogador {num_card}", ["Nenhum"] + lista_jogadores, key=f"jog_{num_card}")
+        temp = st.selectbox(f"Temporada {num_card}", temporadas, key=f"temp_{num_card}")
+        # 👇 2. Adicionamos a caixa de seleção do Tipo dentro do card do jogador
+        tipo = st.selectbox(f"Tipo {num_card}", tipos_temporada, key=f"tipo_{num_card}")
+        
+        if jog != "Nenhum":
+            perfil = obter_perfil_jogador(jog)
+            if perfil:
+                # 👇 3. Passamos a nova variável 'tipo' para a função do banco
+                stats = obter_estatisticas_resumo(perfil['id'], temp, tipo)
+                if stats:
+                    # 👉 Atualizamos o nome para indicar se é (Reg) ou (Play) no título
+                    sigla = "RS" if tipo == "Regular Season" else "PO" if tipo == "Playoffs" else "ALL"
+                    return {"nome": f"{jog} ({temp[-2:]} {sigla})", "stats": stats, "perfil": perfil}
+                else:
+                    st.warning(f"Sem dados para {temp} ({tipo})")
+        return None
+
+# Renderiza os menus e coleta os dados se existirem
+atleta1 = renderizar_seletor(col_sel1, 1)
+atleta2 = renderizar_seletor(col_sel2, 2)
+atleta3 = renderizar_seletor(col_sel3, 3)
+
+atletas_validos = [a for a in [atleta1, atleta2, atleta3] if a is not None]
+
+st.divider()
+
+if len(atletas_validos) > 0:
+    st.subheader("📊 Confronto Estatístico")
+    
+    # Prepara os dados para a tabela
+    tabela_comparativa = []
+    
+    for a in atletas_validos:
+        stats = a["stats"]
+        jogos = stats.get("jogos_disputados", 1)
+        if jogos == 0: jogos = 1
+        
+        # Pega as fotos pra ficar estiloso
+        url_foto = f"https://cdn.nba.com/headshots/nba/latest/254x190/{a['perfil']['id']}.png"
+        
+        # 👇 Adicionamos arredondamento de casa decimal ao Net Rating
+        net_rating_raw = stats.get("net_rating", 0)
+        net_rating = round(net_rating_raw, 1) if isinstance(net_rating_raw, float) else net_rating_raw
+        
+        tabela_comparativa.append({
+            "Foto": url_foto, 
+            "Atleta": a["nome"],
+            "Jogos": stats.get("jogos_disputados", 0),
+            "PPG": round(stats.get("pontos_totais", 0) / jogos, 1),
+            "RPG": round(stats.get("rebotes_totais", 0) / jogos, 1),
+            "APG": round(stats.get("assistencias_totais", 0) / jogos, 1),
+            "TS%": f"{round(stats.get('ts_pct', 0) * 100, 1)}%",
+            "USG%": f"{round(stats.get('usg_pct', 0) * 100, 1)}%",
+            "Net Rating": net_rating
+        })
+    
+    # Converte para Pandas e transpõe para os jogadores ficarem nas colunas
+    df_comp = pd.DataFrame(tabela_comparativa).set_index("Atleta").T
+    
+    # Remove a linha da URL da foto do Dataframe que será renderizado
+    df_exibicao = df_comp.drop("Foto")
+    
+    # Mostramos os rostos primeiro
+    col_fotos = st.columns(len(atletas_validos))
+    for i, col in enumerate(col_fotos):
+        with col:
+            st.image(tabela_comparativa[i]["Foto"], width=120)
+            st.markdown(f"**{tabela_comparativa[i]['Atleta']}**")
+    
+    # Exibe a tabela transposta
+    st.dataframe(df_exibicao, use_container_width=True)
+
+    # Gráfico de Barras Agrupadas para Produção (PPG, RPG, APG)
+    st.subheader("Produção Bruta (Per Game)")
+    
+    fig = go.Figure()
+    metrics = ['PPG', 'RPG', 'APG']
+    
+    for a in tabela_comparativa:
+        valores = [a[m] for m in metrics]
+        fig.add_trace(go.Bar(name=a["Atleta"], x=metrics, y=valores))
+        
+    fig.update_layout(
+        barmode='group',
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#FAFAFA')
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+else:
+    st.info("Selecione pelo menos um jogador acima para iniciar a comparação.")
+
+================================================================================
+ARQUIVO: .\pages\6_teams.py
+================================================================================
+
+import streamlit as st
+import pandas as pd
+from data.queries import obter_identidade_time, obter_elenco_time, obter_momento_recente
+
+# Recupera os filtros globais
+temporada = st.session_state.get('filtro_temporada', '2026-27')
+tipo_temporada = st.session_state.get('filtro_tipo_temporada', 'Regular Season')
+time_selecionado = st.session_state.get('filtro_time', 'Selecione um time...')
+
+if time_selecionado == "Selecione um time...":
+    st.warning("👈 Selecione uma franquia na barra lateral para visualizar o Relatório de Scouting.")
+    st.stop()
+
+st.title(f"🏀 {time_selecionado} | Scouting Report")
+st.markdown(f"**Temporada:** {temporada} | **Fase:** {tipo_temporada}")
+st.divider()
+
+dados_time = obter_identidade_time(time_selecionado, temporada, tipo_temporada)
+df_elenco = obter_elenco_time(time_selecionado, temporada, tipo_temporada)
+
+if dados_time:
+    # 1. OVERVIEW & FOUR FACTORS (Visão Analítica)
+    st.subheader("Eficiência e Ritmo")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Offensive Rating", f"{dados_time.get('off_rating', 0):.1f}", help="Pontos anotados por 100 posses")
+    col2.metric("Defensive Rating", f"{dados_time.get('def_rating', 0):.1f}", help="Pontos sofridos por 100 posses", delta_color="inverse")
+    col3.metric("Net Rating", f"{dados_time.get('net_rating', 0):.1f}", help="Saldo de pontos por 100 posses")
+    col4.metric("Pace", f"{dados_time.get('pace', 0):.1f}", help="Número de posses de bola por 48 minutos")
+
+    # 2. IDENTIDADE DA EQUIPE (Análise Textual Dinâmica)
+    st.markdown("### 🧬 Perfil e Estilo de Jogo")
+    
+    estilos = []
+    pace = dados_time.get('pace', 0)
+    
+    # Exemplo de lógica baseada no Pace (Podemos expandir se você tiver % de 3 pts e AST% no banco)
+    if pace > 100.5:
+        estilos.append("**Pace & Space / Transição Rápida:** A equipe atua em um dos ritmos mais acelerados da liga, buscando definir as jogadas rapidamente antes da defesa adversária se estabelecer.")
+    elif pace < 98 and pace > 0:
+        estilos.append("**Meia-Quadra Metódico:** A equipe opera em ritmo cadenciado, priorizando a execução tática de meia-quadra e reduzindo o número total de posses no jogo.")
+    
+    net_rtg = dados_time.get('net_rating', 0)
+    if net_rtg > 4.5:
+        estilos.append("**Dominância Sustentável:** O Net Rating indica um perfil de *Contender* real, vencendo seus minutos de forma contundente e consistente.")
+    elif net_rtg < -4:
+        estilos.append("**Déficit Estrutural:** O saldo negativo por posse aponta para problemas graves na sustentação de vantagens ou na geração de paradas defensivas.")
+
+    for estilo in estilos:
+        st.info(estilo, icon="📊")
+
+st.divider()
+
+# 3. QUEM É QUEM (Os Motores da Franquia & Recorte de Momento)
+if not df_elenco.empty:
+    st.subheader("⭐ Papéis e Destaques do Elenco")
+    
+    df_rotacao = df_elenco[df_elenco['jogos_disputados'] > (df_elenco['jogos_disputados'].max() * 0.3)]
+    
+    if not df_rotacao.empty:
+        # Agora usamos 4 colunas para caber o "Momento Recente"
+        c1, c2, c3, c4 = st.columns(4)
+        
+        motor = df_rotacao.loc[df_rotacao['PPG'].idxmax()]
+        c1.markdown(f"### 👑 Motor Ofensivo\n**{motor['nome_completo']}**")
+        c1.markdown(f"Principal volume do time. Assume a carga pesada do ataque com **{motor['PPG']:.1f} PTS** e um Usage de **{motor['usg_pct']*100:.1f}%**.")
+        
+        playmaker = df_rotacao.loc[df_rotacao['APG'].idxmax()]
+        c2.markdown(f"### 🧠 Facilitador\n**{playmaker['nome_completo']}**")
+        c2.markdown(f"Gera a fluidez do ataque. Lidera a equipe na distribuição com **{playmaker['APG']:.1f} AST** por jogo.")
+        
+        eficiente = df_rotacao.loc[df_rotacao['ts_pct'].idxmax()]
+        c3.markdown(f"### 🎯 Eficiência\n**{eficiente['nome_completo']}**")
+        c3.markdown(f"Máximo aproveitamento por arremesso. Converte oportunidades com True Shooting de **{eficiente['ts_pct']*100:.1f}%**.")
+
+        # --- O NOVO RECORTE DE MOMENTO ---
+        destaque_recente = obter_momento_recente(time_selecionado, temporada)
+        if destaque_recente:
+            c4.markdown(f"### 🔥 Em Alta (L10)\n**{destaque_recente['nome']}**")
+            c4.markdown(f"Destaque absoluto nos últimos 10 jogos. Média de **{destaque_recente['ppg']} PTS** com **{destaque_recente['fg_pct']}%** nos arremessos.")
+        else:
+            c4.markdown(f"### 🔥 Em Alta (L10)\n*Dados em processamento*")
+            c4.markdown("O recorte de momento exige uma amostra válida de jogos recentes nesta temporada.")
+# 4. ROTAÇÃO DETALHADA
+st.subheader("👥 Profundidade do Elenco")
+if not df_elenco.empty:
+    df_vis = df_elenco[['nome_completo', 'jogos_disputados', 'PPG', 'RPG', 'APG', 'ts_pct', 'usg_pct', 'net_rating']].copy()
+    df_vis['ts_pct'] = df_vis['ts_pct'] * 100
+    df_vis['usg_pct'] = df_vis['usg_pct'] * 100
+    
+    st.dataframe(
+        df_vis,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "nome_completo": st.column_config.TextColumn("Jogador", width="medium"),
+            "jogos_disputados": st.column_config.NumberColumn("GP", help="Jogos Disputados"),
+            "PPG": st.column_config.NumberColumn("PTS", format="%.1f"),
+            "RPG": st.column_config.NumberColumn("REB", format="%.1f"),
+            "APG": st.column_config.NumberColumn("AST", format="%.1f"),
+            "ts_pct": st.column_config.ProgressColumn("TS %", help="Eficiência real de arremesso", format="%.1f%%", min_value=0, max_value=75),
+            "usg_pct": st.column_config.ProgressColumn("USG %", help="Volume de uso no ataque", format="%.1f%%", min_value=0, max_value=40),
+            "net_rating": st.column_config.NumberColumn("Net Rtg", help="Impacto em quadra por 100 posses", format="%.1f")
+        }
+    )
+else:
+    st.warning("Rotação não encontrada para esta franquia.")
+
+================================================================================
+ARQUIVO: .\pages\7_shot_chart.py
+================================================================================
+
+import streamlit as st
+from data.queries import obter_perfil_jogador, obter_mapa_arremessos_jogador
+from components.charts import grafico_mapa_arremessos
+
+st.title("🗺️ Mapa de Arremessos (Shot Chart)")
+st.markdown("Visualização espacial da eficiência de pontuação. Cada ponto representa um arremesso tentado.")
+
+jogador_nome = st.session_state.get('filtro_jogador')
+temporada_selecionada = st.session_state.get('filtro_temporada')
+# 👇 1. Resgatando o tipo de temporada da sessão
+tipo_temporada = st.session_state.get('filtro_tipo_temporada', 'Regular Season')
+
+if not jogador_nome:
+    st.warning("Selecione um jogador na barra lateral.")
+    st.stop()
+
+perfil = obter_perfil_jogador(jogador_nome)
+if perfil:
+    jogador_id = perfil.get("id")
+    
+    # 👇 2. Atualizando o texto de carregamento para refletir o filtro
+    with st.spinner(f"Buscando histórico de arremessos de {jogador_nome} ({tipo_temporada})..."):
+        # 👇 3. Passando a flag para a requisição da API
+        df_shots = obter_mapa_arremessos_jogador(jogador_id, temporada_selecionada, tipo_temporada)
+    
+    if not df_shots.empty:
+        total_acertos = len(df_shots[df_shots['SHOT_MADE_FLAG'] == 1])
+        total_tentativas = len(df_shots)
+        fg_pct = (total_acertos / total_tentativas) * 100
+        
+        # 👇 4. Mostrando a flag no título do gráfico
+        st.markdown(f"### {jogador_nome} - {temporada_selecionada} ({tipo_temporada})")
+        st.caption(f"**Volume Total:** {total_tentativas} arremessos | **Aproveitamento Geral:** {fg_pct:.1f}%")
+        
+        # Chama a função mágica do Plotly
+        fig = grafico_mapa_arremessos(df_shots)
+        if fig:
+            # O config scrollZoom=False impede que o mapa perca o enquadramento sem querer
+            st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': False, 'displayModeBar': False})
+    else:
+        st.info(f"Nenhum dado de arremesso encontrado para {jogador_nome} nesta temporada ({tipo_temporada}).")
+
+================================================================================
+ARQUIVO: .\pages\8_glossary.py
+================================================================================
+
+import streamlit as st
+
+st.title("📚 Glossário & Metodologia")
+st.markdown("Bem-vindo ao dicionário de métricas do nosso painel. Aqui você encontra a definição, fórmula e forma de interpretar cada estatística utilizada no Basketball Analytics moderno.")
+st.divider()
+
+# Criando abas para organizar por categorias
+aba_trad, aba_efi, aba_uso, aba_imp = st.tabs([
+    "📊 Tradicionais", 
+    "🎯 Eficiência", 
+    "🧠 Criação e Envolvimento", 
+    "⚡ Impacto (Avançadas)"
+])
+
+with aba_trad:
+    st.subheader("Estatísticas Tradicionais (Box Score)")
+    
+    with st.expander("PPG, RPG, APG (Per Game Stats)", expanded=True):
+        st.markdown("""
+        **O que mede:** Pontos, Rebotes e Assistências por Jogo.
+        - **Como interpretar:** É a produção bruta do jogador. Representa o volume absoluto entregue em média por partida.
+        - **Limitações:** Não considera o ritmo (Pace) da equipe nem a eficiência. Um jogador pode ter um PPG alto simplesmente por arremessar muitas vezes e jogar em um time que corre muito.
+        """)
+        
+with aba_efi:
+    st.subheader("Métricas de Eficiência")
+    
+    with st.expander("TS% (True Shooting Percentage)", expanded=True):
+        st.markdown("""
+        **O que mede:** A eficiência real de pontuação de um jogador.
+        - **Fórmula:** `Pontos / (2 * (FGA + 0.44 * FTA))`
+        - **Como interpretar:** É a métrica definitiva para avaliar se um jogador arremessa bem. Diferente do FG% (aproveitamento de quadra normal), o TS% dá o peso matemático correto para as bolas de 3 pontos (que valem mais) e inclui a habilidade de cavar e converter lances livres.
+        - **Referência:** A média da liga costuma ficar em torno de **57% a 58%**. Estrelas de elite ultrapassam os **62%**.
+        """)
+        
+    with st.expander("eFG% (Effective Field Goal Percentage)"):
+        st.markdown("""
+        **O que mede:** O aproveitamento de quadra ajustado para bolas de 3.
+        - **Como interpretar:** Parecido com o TS%, mas **não inclui os lances livres**. É excelente para medir quão letal o jogador é exclusivamente com a bola rolando.
+        """)
+
+with aba_uso:
+    st.subheader("Criação e Envolvimento")
+    
+    with st.expander("USG% (Usage Rate)", expanded=True):
+        st.markdown("""
+        **O que mede:** A porcentagem das posses de bola da equipe que "terminam" nas mãos do jogador enquanto ele está em quadra.
+        - **Como interpretar:** Uma posse "termina" com o jogador quando ele arremessa, sofre falta para ir ao lance livre ou comete um turnover. Mostra o peso da responsabilidade ofensiva.
+        - **Referência:** Um USG% de **20%** é a média exata (1/5 do time). Astros de altíssimo volume (como Luka Doncic ou Joel Embiid) operam na casa dos **32% a 38%**.
+        """)
+        
+    with st.expander("AST% (Assist Percentage)"):
+        st.markdown("""
+        **O que mede:** A porcentagem de arremessos convertidos pelos companheiros de equipe que receberam assistência desse jogador.
+        - **Como interpretar:** Mostra o quão vital o jogador é como garçom. Um AST% alto significa que o time depende da visão de quadra dele para pontuar.
+        """)
+
+with aba_imp:
+    st.subheader("Impacto e On/Off")
+    
+    with st.expander("ORTG & DRTG (Offensive / Defensive Rating)", expanded=True):
+        st.markdown("""
+        **O que mede:** Pontos marcados (ORTG) ou sofridos (DRTG) pela equipe a cada **100 posses de bola** com o jogador em quadra.
+        - **Como interpretar:** A melhor forma de medir ataques e defesas, pois normaliza o ritmo de jogo. Times mais rápidos têm mais posses e fariam mais pontos naturalmente, os *Ratings* nivelam isso para sabermos quem é realmente mais eficiente. 
+        """)
+        
+    with st.expander("Net Rating"):
+        st.markdown("""
+        **O que mede:** A diferença entre o ORTG e o DRTG.
+        - **Como interpretar:** É o saldo de pontos por 100 posses. Se o Net Rating é de **+6.5**, o time "vence" os minutos daquele jogador por uma margem de 6.5 pontos a cada 100 posses.
+        """)
+        
+    with st.expander("PIE (Player Impact Estimate)"):
+        st.markdown("""
+        **O que mede:** Métrica oficial da NBA que estima a % de eventos do jogo nos quais o jogador se envolveu positivamente.
+        - **Como interpretar:** Uma "nota geral" de impacto estatístico cru na partida. Leva em conta pontos, tocos, rebotes e pune turnovers e erros.
+        """)
+
+================================================================================
+ARQUIVO: .\utils\archetypes.py
+================================================================================
+
+def classificar_arquetipo(stats, def_stats):
+    """
+    Analisa os dados de ataque e defesa e classifica o jogador em um arquétipo do NBA 2K.
+    A ordem dos IFs importa! Os mais raros/difíceis ficam no topo.
+    """
+    if not stats:
+        return None
+
+    # Normalizar dados (Per Game e Porcentagens)
+    jogos = stats.get('jogos_disputados', 1)
+    if jogos == 0: jogos = 1
+    
+    ppg = stats.get('pontos_totais', 0) / jogos
+    rpg = stats.get('rebotes_totais', 0) / jogos
+    apg = stats.get('assistencias_totais', 0) / jogos
+    usg = (stats.get('usg_pct') or 0) * 100
+    ts = (stats.get('ts_pct') or 0) * 100
+    ast_pct = (stats.get('ast_pct') or 0) * 100
+
+    spg = def_stats.get('roubos_totais', 0) / jogos if def_stats else 0
+    bpg = def_stats.get('tocos_totais', 0) / jogos if def_stats else 0
+    defl = def_stats.get('deflections', 0) / jogos if def_stats else 0
+
+    # 1. Superstar / Franchise Player
+    if ppg >= 26 and usg >= 28:
+        return {
+            "nome": "Franchise Cornerstone", "icone": "👑", 
+            "cor": "linear-gradient(135deg, #FFD700, #FDB931)", 
+            "desc": "A estrela máxima. Carrega o ataque nas costas com altíssimo volume e atrai toda a atenção da defesa."
+        }
+
+    # 2. Maestro / Playmaker Mágico
+    if apg >= 8 and ast_pct >= 35:
+        return {
+            "nome": "Floor General", "icone": "🧠", 
+            "cor": "linear-gradient(135deg, #00C9FF, #92FE9D)", 
+            "desc": "O maestro do time. Controla o ritmo do jogo, lê a defesa e é o motor que faz o sistema funcionar."
+        }
+
+    # 3. Monstro dos Dois Lados da Quadra
+    if ppg >= 20 and (spg >= 1.5 or bpg >= 1.2 or defl >= 2.5):
+        return {
+            "nome": "Two-Way Star", "icone": "🦅", 
+            "cor": "linear-gradient(135deg, #f12711, #f5af19)", 
+            "desc": "Elite nos dois lados da quadra. Pontua em alto volume no ataque e destrói posses adversárias na defesa."
+        }
+
+    # 4. Protetor de Aro Dominante
+    if rpg >= 10 and bpg >= 1.5:
+        return {
+            "nome": "Paint Beast", "icone": "🧱", 
+            "cor": "linear-gradient(135deg, #3a7bd5, #3a6073)", 
+            "desc": "O dono do garrafão. Domina a tábua de rebotes e protege o aro, alterando os arremessos adversários."
+        }
+
+    # 5. Cestinha / Microondas
+    if ppg >= 15 and usg >= 25 and apg < 5:
+        return {
+            "nome": "Pure Bucket", "icone": "🔥", 
+            "cor": "linear-gradient(135deg, #FF416C, #FF4B2B)", 
+            "desc": "Pontuador nato. Especialista em criar o próprio arremesso, isolar (ISO) e castigar defesas."
+        }
+
+    # 6. Atirador de Elite / 3&D
+    if ts >= 60 and usg <= 20 and ppg >= 10:
+        return {
+            "nome": "Elite Sniper", "icone": "🎯", 
+            "cor": "linear-gradient(135deg, #11998e, #38ef7d)", 
+            "desc": "Baixo uso de bola, mas altíssima eficiência. Pega a bola para definir e pune as dobras nos astros do time."
+        }
+
+    # 7. Faz-Tudo
+    if ppg >= 12 and rpg >= 6 and apg >= 4:
+        return {
+            "nome": "Swiss Army Knife", "icone": "🛠️", 
+            "cor": "linear-gradient(135deg, #8E2DE2, #4A00E0)", 
+            "desc": "O canivete suíço. Faz de tudo um pouco com versatilidade pura para preencher qualquer buraco tático."
+        }
+
+    # 8. Carrapato Defensivo
+    if (spg >= 1.5 or defl >= 2.5) and usg <= 18:
+        return {
+            "nome": "Lockdown Defender", "icone": "🔒", 
+            "cor": "linear-gradient(135deg, #333333, #dd1818)", 
+            "desc": "Especialista defensivo. Sua principal função é infernizar e anular a principal arma ofensiva adversária."
+        }
+
+    # 9. A Cola do Time
+    if stats.get('net_rating', 0) >= 3.0 and usg <= 16:
+        return {
+            "nome": "Glue Guy", "icone": "🧩", 
+            "cor": "linear-gradient(135deg, #56ab2f, #a8e063)", 
+            "desc": "A cola do time. Não precisa tocar na bola para impactar positivamente; focado nos detalhes que vencem jogos."
+        }
+
+    # 10. Base da Rotação
+    return {
+        "nome": "System Player", "icone": "⚙️", 
+        "cor": "linear-gradient(135deg, #4b6cb7, #182848)", 
+        "desc": "Peça de rotação sólida que cumpre sua função dentro do esquema tático estabelecido."
+    }
+
+================================================================================
+ARQUIVO: .\utils\calculations.py
+================================================================================
+
+import pandas as pd
+
+def calcular_percentil(valor_jogador, lista_todos_valores):
+    """Calcula em qual percentil (0 a 100) o jogador está comparado ao resto da liga."""
+    if valor_jogador is None or valor_jogador == "N/A" or not lista_todos_valores:
+        return None
+        
+    # Limpa valores vazios da liga
+    lista_limpa = [v for v in lista_todos_valores if v is not None]
+    if not lista_limpa:
+        return None
+        
+    serie = pd.Series(lista_limpa)
+    # Calcula a porcentagem de jogadores que estão abaixo dele
+    percentil = round((serie < valor_jogador).mean() * 100)
+    return percentil
+
+def gerar_texto_snapshot(usg_percentil, ts_percentil):
+    """Gera o texto inteligente baseado no volume (USG%) e eficiência (TS%)."""
+    if usg_percentil is None or ts_percentil is None:
+        return "Dados insuficientes para gerar a análise de perfil deste jogador."
+        
+    # Análise de Volume (USG%)
+    secao_volume = ""
+    if usg_percentil >= 85:
+        secao_volume = f"apresenta um **altíssimo volume ofensivo** (USG% no percentil {usg_percentil}), sendo uma das principais opções de ataque da equipe"
+    elif usg_percentil >= 65:
+        secao_volume = f"possui um **volume ofensivo relevante** (USG% no percentil {usg_percentil}), assumindo boa parte da criação do time"
+    elif usg_percentil >= 35:
+        secao_volume = f"tem um **papel ofensivo complementar** (USG% no percentil {usg_percentil}), atuando mais dentro do fluxo do sistema"
+    else:
+        secao_volume = f"possui **baixo volume de finalização** (USG% no percentil {usg_percentil}), focado em funções específicas ou finalizações esporádicas"
+
+    # Análise de Eficiência (TS%)
+    secao_eficiencia = ""
+    if ts_percentil >= 80:
+        secao_eficiencia = f"mantendo uma **eficiência de elite** na pontuação (TS% no percentil {ts_percentil})."
+    elif ts_percentil >= 50:
+        secao_eficiencia = f"com uma **eficiência acima da média** da liga (TS% no percentil {ts_percentil})."
+    elif ts_percentil >= 30:
+        secao_eficiencia = f"mas com uma **eficiência abaixo da média** em seus arremessos (TS% no percentil {ts_percentil})."
+    else:
+        secao_eficiencia = f"sofrendo com **baixa eficiência** na conversão de pontos (TS% no percentil {ts_percentil})."
+
+    return f"Este jogador {secao_volume}, {secao_eficiencia}"
+
+def gerar_tabela_comparativa(stats_jogador, df_liga):
+    """Gera o DataFrame comparativo Jogador vs Liga com Percentis formatados."""
+    if df_liga.empty or not stats_jogador:
+        return pd.DataFrame()
+
+    # Define as métricas que vamos comparar e as colunas correspondentes no df_liga
+    metricas = [
+        {"nome": "Pontos (PPG)", "coluna": "PPG", "formato": "{:.1f}"},
+        {"nome": "Rebotes (RPG)", "coluna": "RPG", "formato": "{:.1f}"},
+        {"nome": "Assistências (APG)", "coluna": "APG", "formato": "{:.1f}"},
+        {"nome": "True Shooting (TS%)", "coluna": "ts_pct", "formato": "{:.1%}"},
+        {"nome": "Usage Rate (USG%)", "coluna": "usg_pct", "formato": "{:.1%}"},
+        {"nome": "Net Rating", "coluna": "net_rating", "formato": "{:.1f}"}
+    ]
+    
+    tabela = []
+    
+    # Vamos precisar calcular o PPG, RPG, APG do jogador de novo aqui rapidinho
+    jogos = stats_jogador.get("jogos_disputados", 1)
+    valores_jogador = {
+        "PPG": stats_jogador.get("pontos_totais", 0) / jogos,
+        "RPG": stats_jogador.get("rebotes_totais", 0) / jogos,
+        "APG": stats_jogador.get("assistencias_totais", 0) / jogos,
+        "ts_pct": stats_jogador.get("ts_pct", 0),
+        "usg_pct": stats_jogador.get("usg_pct", 0),
+        "net_rating": stats_jogador.get("net_rating", 0)
+    }
+
+    for m in metricas:
+        col = m["coluna"]
+        val_jogador = valores_jogador[col]
+        
+        # Média da liga
+        media_liga = df_liga[col].mean()
+        
+        # Percentil
+        percentil = calcular_percentil(val_jogador, df_liga[col].tolist())
+        
+        # Formatação bonitinha
+        fmt = m["formato"]
+        
+        tabela.append({
+            "Métrica": m["nome"],
+            "Jogador": fmt.format(val_jogador) if val_jogador is not None else "N/A",
+            "Média da Liga": fmt.format(media_liga),
+            "Percentil": f"{percentil}º" if percentil else "N/A"
+        })
+        
+    return pd.DataFrame(tabela)
+
+================================================================================
+ARQUIVO: .\utils\logos.py
+================================================================================
+
+from nba_api.stats.static import teams
+
+def obter_url_logo_time(identifier):
+    """Retorna a URL oficial do logo da NBA baseado no ID numérico ou na sigla (ex: LAL)."""
+    all_teams = teams.get_teams()
+    team_obj = None
+    
+    if identifier is None:
+        return None
+        
+    if str(identifier).isdigit():
+        team_obj = next((t for t in all_teams if t['id'] == int(identifier)), None)
+    else:
+        identifier_str = str(identifier).upper()
+        team_obj = next((t for t in all_teams if t['abbreviation'] == identifier_str), None)
+        
+    if team_obj:
+        team_id = team_obj['id']
+        return f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.svg"
+    return None
+
+================================================================================
+ARQUIVO: .\utils\news.py
+================================================================================
+
+import urllib.request
+import xml.etree.ElementTree as ET
+
+def obter_noticias_jogador(nome_jogador):
+    """Busca as últimas notícias do jogador na web usando RSS público do Google News."""
+    try:
+        query = nome_jogador.replace(" ", "+")
+        url = f"https://news.google.com/rss/search?q={query}+NBA&hl=en-US&gl=US&ceid=US:en"
+        
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=3) as response:
+            xml_data = response.read()
+        
+        root = ET.fromstring(xml_data)
+        noticias = []
+        
+        # Coleta até 4 notícias mais recentes
+        for item in root.findall('./channel/item')[:4]:
+            titulo = item.find('title').text if item.find('title') is not None else ""
+            link = item.find('link').text if item.find('link') is not None else "#"
+            data = item.find('pubDate').text if item.find('pubDate') is not None else ""
+            
+            # Formata a data para ficar mais limpa (ex: Sat, 03 Oct 2026)
+            data_limpa = data[:16] if len(data) >= 16 else data
+            
+            noticias.append({
+                "titulo": titulo,
+                "link": link,
+                "data": data_limpa
+            })
+            
+        return noticias
+    except Exception:
+        return []
+
+================================================================================
+ARQUIVO: .\utils\position_analyzer.py
+================================================================================
+
+def analisar_perfil_posicional(perfil, stats):
+    """
+    Analisa a posição base e as estatísticas (APG, RPG, USG) para determinar 
+    o papel tático real e a versatilidade posicional do atleta.
+    """
+    if not perfil or not stats:
+        return {
+            "papel": "Especialista de Rotação", 
+            "versatilidade": "Padrão", 
+            "escopo": "Função fixa dentro do sistema tático."
+        }
+        
+    posicao = str(perfil.get("posicao", "")).upper()
+    nome = str(perfil.get("nome_completo", "")).upper()
+    
+    jogos = stats.get("jogos_disputados", 1)
+    if jogos == 0: jogos = 1
+    
+    apg = stats.get("assistencias_totais", 0) / jogos
+    rpg = stats.get("rebotes_totais", 0) / jogos
+    ppg = stats.get("pontos_totais", 0) / jogos
+
+    # Casos especiais de elite / Playmakers universais (ex: LeBron, Jokic, Luka)
+    if "LEBRON" in nome or "DONCIC" in nome or "JOKIC" in nome or (apg >= 7 and rpg >= 7):
+        return {
+            "papel": "Primary Playmaker / Point-Forward",
+            "posicao_ideal": "Ala / Armador Universal (Posições 1 a 4)",
+            "versatilidade": "🌟 Extrema (Domínio absoluto em múltiplas funções)",
+            "dominancia": "Capaz de digitar o ritmo da partida, pontuar em alta eficiência e gerenciar o ataque como armador principal."
+        }
+    
+    # Armadores criadores de jogo
+    if "GUARD" in posicao or "G" in posicao:
+        if apg >= 6.5:
+            return {
+                "papel": "Floor General / Guard Criador",
+                "posicao_ideal": "Armador (PG) / Combo Guard",
+                "versatilidade": "⚡ Alta (cria para si e para os companheiros)",
+                "dominancia": "Controla o P&R (Pick and Roll), acha linhas de passe e define nos momentos críticos."
+            }
+        else:
+            return {
+                "papel": "Scoring Guard / Ala-Armador de Impacto",
+                "posicao_ideal": "Armador / Ala-Armador (PG / SG)",
+                "versatilidade": " Moderada (foco em espaçamento e pontuação)",
+                "dominancia": "Especialista em arremessos de perímetro, transição rápida e pressão defensiva na bola."
+            }
+            
+    # Alas e Alas-Pivôs
+    elif "FORWARD" in posicao or "F" in posicao or "F-C" in posicao:
+        if rpg >= 8.5 and apg >= 4:
+            return {
+                "papel": "Versatile Forward / Forward Dominante",
+                "posicao_ideal": "Ala-Pivô Moderno (SF / PF)",
+                "versatilidade": "🌟 Extrema (Troca de marcação em qualquer posição e puxa contra-ataques)",
+                "dominancia": "Mistura força no garrafão com visão de quadra de armador e arremesso exterior."
+            }
+        elif ppg >= 18:
+            return {
+                "papel": "Wing Scorer / Ala Pontuador",
+                "posicao_ideal": "Ala (SF) / Ala-Armador (SG)",
+                "versatilidade": "⚡ Média-Alta (Ataca iso e atua sem a bola)",
+                "dominancia": "Principal válvula de escape ofensiva nas alas, excelente em cortes e infiltrações."
+            }
+        else:
+            return {
+                "papel": "3&D Wing / Ala de Sistema",
+                "posicao_ideal": "Ala (SF / PF)",
+                "versatilidade": "⚡ Sólida (Defesa de perímetro e espaçamento)",
+                "dominancia": "Foco total em eficiência sem bola, contestação de arremessos e defesa de alas adversários."
+            }
+            
+    # Pivôs tradicionais ou modernos
+    elif "CENTER" in posicao or "C" in posicao:
+        if apg >= 5:
+            return {
+                "papel": "Hub Big / Pivô Distribuidor",
+                "posicao_ideal": "Pivô Central (C)",
+                "versatilidade": "🌟 Alta (Passador de elite a partir do poste alto)",
+                "dominancia": "Atrai dobras no garrafão e pune a defesa com passes cirúrgicos para cortadores."
+            }
+        else:
+            return {
+                "papel": "Rim Protector / Big Man Tradicional",
+                "posicao_ideal": "Pivô (C)",
+                "versatilidade": " Limitada ao garrafão",
+                "dominancia": "Domínio absoluto de rebotes defensivos, proteção de aro e finalizações aéreas (Pick and Roll)."
+            }
+            
+    return {
+        "papel": "Rotation Player / Peça de Sistema",
+        "posicao_ideal": "Posição Base",
+        "versatilidade": "Padrão",
+        "dominancia": "Cumpre funções táticas específicas determinadas pela comissão técnica."
+    }

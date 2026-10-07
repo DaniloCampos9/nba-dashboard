@@ -9,6 +9,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+from data.queries import obter_lista_jogadores, obter_lista_times
+
 # 2. Configuração dos Filtros Globais na Sidebar
 st.sidebar.title("⚙️ Filtros da Análise")
 
@@ -17,16 +19,22 @@ temporada = st.sidebar.selectbox("Temporada", temporadas_disponiveis, index=0)
 tipo_temporada = st.sidebar.radio("Tipo de Temporada", ["Regular Season", "Playoffs", "Regular Season + Playoffs"])
 
 st.sidebar.divider()
-st.sidebar.markdown("### Contexto do Jogador")
+st.sidebar.markdown("### Contexto de Análise")
 
-# A MÁGICA ACONTECE AQUI: Adicionamos um placeholder inicial para o usuário escolher o jogador
+# --- NOVO: Seletor de Time ---
+lista_times = obter_lista_times(temporada)
+opcoes_times = ["Selecione um time..."] + lista_times
+time_selecionado = st.sidebar.selectbox("Franquia", opcoes_times)
+
+# --- Seletor de Jogador ---
 lista_jogadores = obter_lista_jogadores()
 opcoes_jogadores = ["Selecione um jogador..."] + lista_jogadores
 jogador_selecionado = st.sidebar.selectbox("Jogador", opcoes_jogadores)
 
-# Salvar filtros na sessão para as outras páginas lerem
+# Salvar filtros na sessão para as outras páginas lerem de forma independente
 st.session_state['filtro_temporada'] = temporada
 st.session_state['filtro_tipo_temporada'] = tipo_temporada
+st.session_state['filtro_time'] = time_selecionado
 st.session_state['filtro_jogador'] = jogador_selecionado
 
 # 3. Roteamento de Páginas (Home configurada como padrão)

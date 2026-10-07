@@ -5,14 +5,15 @@ from nba_api.stats.static import teams
 
 from data.queries import (
     obter_perfil_jogador, obter_estatisticas_resumo, obter_dados_liga_avancados, 
-    obter_dados_completos_liga, obter_estatisticas_defesa, obter_timeline_carreira
+    obter_dados_completos_liga, obter_estatisticas_defesa, obter_timeline_carreira,
+    obter_benchmarking_jogador  # 👇 Importando o motor de benchmarking!
 )
 from utils.calculations import calcular_percentil, gerar_texto_snapshot, gerar_tabela_comparativa
 from components.charts import grafico_percentis_snapshot
 from utils.archetypes import classificar_arquetipo
 from utils.news import obter_noticias_jogador
 from utils.logos import obter_url_logo_time
-from utils.position_analyzer import analisar_perfil_posicional # 👇 Importando nossa inteligência de posições!
+from utils.position_analyzer import analisar_perfil_posicional 
 
 jogador_nome = st.session_state.get('filtro_jogador')
 
@@ -32,7 +33,7 @@ if perfil:
     stats = obter_estatisticas_resumo(jogador_id, temporada_selecionada, tipo_temporada)
     def_stats = obter_estatisticas_defesa(jogador_id, temporada_selecionada, tipo_temporada)
     arquetipo = classificar_arquetipo(stats, def_stats)
-    perfil_tatico = analisar_perfil_posicional(perfil, stats) # 🧠 Analisando papel posicional
+    perfil_tatico = analisar_perfil_posicional(perfil, stats)
     
     # ==========================================
     # CABEÇALHO PREMIUM & ARQUÉTIPO
@@ -125,150 +126,168 @@ if perfil:
     st.divider()
     
     # ==========================================
-    # SEÇÃO DE ESTATÍSTICAS E KPIS
+    # SEÇÃO DE ESTATÍSTICAS E KPIS COM BENCHMARKING
     # ==========================================
-    st.subheader("📊 Player Snapshot & KPIs")
+    st.subheader("📊 Player Snapshot & Benchmarking")
+    st.markdown("O **Percentil** indica a porcentagem da liga que este jogador supera. Mínimo de 10 jogos disputados para contextualização.")
     
-    if stats:
-        jogos = stats.get("jogos_disputados", 0)
-        if jogos > 0:
-            ppg = round(stats.get("pontos_totais", 0) / jogos, 1)
-            rpg = round(stats.get("rebotes_totais", 0) / jogos, 1)
-            apg = round(stats.get("assistencias_totais", 0) / jogos, 1)
-        else: ppg = rpg = apg = "N/A"
-            
-        ts_pct_raw = stats.get("ts_pct")
-        ts_pct = f"{round(ts_pct_raw * 100, 1)}%" if pd.notnull(ts_pct_raw) else "N/A"
-        
-        usg_pct_raw = stats.get("usg_pct")
-        usg_pct = f"{round(usg_pct_raw * 100, 1)}%" if pd.notnull(usg_pct_raw) else "N/A"
-        
-        net_rating = stats.get("net_rating", "N/A")
-        if isinstance(net_rating, float): net_rating = round(net_rating, 1)
-        
+    benchmarks = obter_benchmarking_jogador(jogador_id, temporada_selecionada, tipo_temporada)
+    
+    if benchmarks and 'PPG' in benchmarks:
         col1, col2, col3, col4 = st.columns(4)
         
+        def render_metric(coluna_st, bm_key):
+            if bm_key in benchmarks:
+                bm = benchmarks[bm_key]
+                sufixo = "%" if bm['is_pct'] else ""
+                coluna_st.metric(bm['nome'], f"{bm['valor']:.1f}{sufixo}", bm['classificacao'], delta_color=bm['cor'])
+                coluna_st.caption(f"Liga: {bm['media_liga']:.1f}{sufixo} | Perc: {bm['percentil']:.0f}")
+
         with col1:
-            st.metric("PPG", ppg, help="Points Per Game (Pontos por jogo)")
-            st.metric("USG%", usg_pct, help="Usage Rate: Volume de posses finalizadas por este jogador.")
+            render_metric(st, 'PPG')
+            render_metric(st, 'usg_pct')
             
         with col2:
-            st.metric("RPG", rpg, help="Rebounds Per Game (Rebotes por jogo)")
-            st.metric("TS%", ts_pct, help="True Shooting: Eficiência total considerando lances livres e 3pt.")
+            render_metric(st, 'RPG')
+            render_metric(st, 'ts_pct')
             
         with col3:
-            st.metric("APG", apg, help="Assists Per Game (Assistências por jogo)")
-            st.metric("Net Rating", net_rating, help="Saldo de pontos da equipe a cada 100 posses de bola.")
+            render_metric(st, 'APG')
+            render_metric(st, 'net_rating')
             
         with col4:
-            pie_raw = stats.get("pie")
-            pie = f"{round(pie_raw * 100, 1)}%" if pd.notnull(pie_raw) else "N/A"
-            ast_pct_raw = stats.get("ast_pct")
-            ast_pct = f"{round(ast_pct_raw * 100, 1)}%" if pd.notnull(ast_pct_raw) else "N/A"
+            render_metric(st, 'pie')
+            render_metric(st, 'ast_pct')
             
-            st.metric("PIE", pie, help="Mede a % de eventos positivos do jogo criados pelo jogador.")
-            st.metric("AST%", ast_pct, help="Estimativa da % de cestas assistidas por ele.")
-        
-        st.divider()
-        
-        # ==========================================
-        # CONFRONTO CONTRA A LIGA
-        # ==========================================
-        st.markdown("### ⚖️ Player vs League Landscape")
-        
-        dados_liga = obter_dados_liga_avancados(temporada_selecionada, tipo_temporada)
-        df_liga_completo = obter_dados_completos_liga(temporada_selecionada, tipo_temporada)
-        
-        lista_usg_liga = [jog.get("usg_pct") for jog in dados_liga if jog.get("usg_pct") is not None]
-        lista_ts_liga = [jog.get("ts_pct") for jog in dados_liga if jog.get("ts_pct") is not None]
-        
-        usg_percentil = calcular_percentil(stats.get("usg_pct"), lista_usg_liga)
-        ts_percentil = calcular_percentil(stats.get("ts_pct"), lista_ts_liga)
-        texto_resumo = gerar_texto_snapshot(usg_percentil, ts_percentil)
-        
-        col_grafico, col_tabela = st.columns([1, 1.2])
-        
-        with col_grafico:
-            st.info(f"💡 {texto_resumo}")
-            if usg_percentil is not None and ts_percentil is not None:
-                fig_percentis = grafico_percentis_snapshot(usg_percentil, ts_percentil)
-                st.plotly_chart(fig_percentis, use_container_width=True, config={'displayModeBar': False})
-                
-        with col_tabela:
-            st.markdown("O **Percentil** indica onde o atleta está no ranqueamento da NBA (ex: 90º = melhor que 90% da liga).")
-            if not df_liga_completo.empty:
-                df_comparativo = gerar_tabela_comparativa(stats, df_liga_completo)
-                st.dataframe(df_comparativo, use_container_width=True, hide_index=True)
-            else:
-                st.warning("Não foi possível carregar as médias da liga.")
-                
-        st.divider()
+    else:
+        st.warning("O jogador ainda não atingiu o mínimo de 10 jogos nesta temporada para gerar o benchmarking de liga. Mostrando dados brutos:")
+        # Fallback para os dados antigos caso o cara tenha menos de 10 jogos
+        if stats:
+            jogos = stats.get("jogos_disputados", 0)
+            if jogos > 0:
+                ppg = round(stats.get("pontos_totais", 0) / jogos, 1)
+                rpg = round(stats.get("rebotes_totais", 0) / jogos, 1)
+                apg = round(stats.get("assistencias_totais", 0) / jogos, 1)
+            else: ppg = rpg = apg = "N/A"
+            ts_pct = f"{round(stats.get('ts_pct', 0) * 100, 1)}%" 
+            usg_pct = f"{round(stats.get('usg_pct', 0) * 100, 1)}%" 
+            net_rating = round(stats.get("net_rating", 0), 1)
+            
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("PPG", ppg)
+            col1.metric("USG%", usg_pct)
+            col2.metric("RPG", rpg)
+            col2.metric("TS%", ts_pct)
+            col3.metric("APG", apg)
+            col3.metric("Net Rating", net_rating)
+            col4.metric("PIE", f"{round(stats.get('pie', 0) * 100, 1)}%")
+            col4.metric("AST%", f"{round(stats.get('ast_pct', 0) * 100, 1)}%")
 
-        # ==========================================
-        # 📰 FEED DE NOTÍCIAS EM TEMPO REAL
-        # ==========================================
-        st.markdown(f"### 📰 Latest News & Rumors: {jogador_nome}")
-        st.caption("Últimas atualizações, análises e movimentações coletadas em tempo real da web.")
-        
-        noticias = obter_noticias_jogador(jogador_nome)
-        
-        if noticias:
-            cols_news = st.columns(len(noticias) if len(noticias) <= 4 else 4)
-            for i, noticia in enumerate(noticias[:4]):
-                with cols_news[i]:
-                    with st.container(border=True):
-                        st.markdown(f"**{noticia['titulo']}**")
-                        st.caption(f"📅 {noticia['data']}")
-                        st.markdown(f"[Ler matéria]({noticia['link']})")
+    st.divider()
+    
+    # ==========================================
+    # CONFRONTO CONTRA A LIGA (SEU CÓDIGO ORIGINAL)
+    # ==========================================
+    st.markdown("### ⚖️ Player vs League Landscape")
+    
+    dados_liga = obter_dados_liga_avancados(temporada_selecionada, tipo_temporada)
+    df_liga_completo = obter_dados_completos_liga(temporada_selecionada, tipo_temporada)
+    
+    lista_usg_liga = [jog.get("usg_pct") for jog in dados_liga if jog.get("usg_pct") is not None]
+    lista_ts_liga = [jog.get("ts_pct") for jog in dados_liga if jog.get("ts_pct") is not None]
+    
+    usg_percentil = calcular_percentil(stats.get("usg_pct"), lista_usg_liga)
+    ts_percentil = calcular_percentil(stats.get("ts_pct"), lista_ts_liga)
+    texto_resumo = gerar_texto_snapshot(usg_percentil, ts_percentil)
+    
+    col_grafico, col_tabela = st.columns([1, 1.2])
+    
+    with col_grafico:
+        st.info(f"💡 {texto_resumo}")
+        if usg_percentil is not None and ts_percentil is not None:
+            fig_percentis = grafico_percentis_snapshot(usg_percentil, ts_percentil)
+            st.plotly_chart(fig_percentis, use_container_width=True, config={'displayModeBar': False})
+            
+    with col_tabela:
+        st.markdown("O **Percentil** indica onde o atleta está no ranqueamento da NBA (ex: 90º = melhor que 90% da liga).")
+        if not df_liga_completo.empty:
+            df_comparativo = gerar_tabela_comparativa(stats, df_liga_completo)
+            st.dataframe(df_comparativo, use_container_width=True, hide_index=True)
         else:
-            st.info("Nenhuma notícia recente encontrada no momento para este atleta.")
-
-        st.divider()
-
-        # ==========================================
-        # ⏳ TIMELINE DE CARREIRA & FRANQUIAS (EXPANSÍVEL)
-        # ==========================================
-        with st.expander("⏳ Ver Histórico Completo de Carreira (Franquias e Temporadas Anteriores)", expanded=False):
-            with st.spinner("Carregando linha do tempo da carreira..."):
-                df_reg, df_play = obter_timeline_carreira(jogador_id)
+            st.warning("Não foi possível carregar as médias da liga.")
             
-            if not df_reg.empty:
-                df_times_unicos = df_reg[df_reg['TEAM_ABBREVIATION'] != 'TOT'].copy()
-                times_passados = df_times_unicos['TEAM_ABBREVIATION'].unique()
-                
-                st.markdown("**Franquias Representadas na Carreira:**")
-                cols_teams = st.columns(len(times_passados) if len(times_passados) <= 6 else 6)
-                
-                for idx, time_abrev in enumerate(times_passados):
-                    col_idx = idx % 6
-                    logo_url_franquia = obter_url_logo_time(time_abrev)
-                    logo_html = f'<img src="{logo_url_franquia}" width="38" style="margin-bottom: 6px;"/>' if logo_url_franquia else ''
-                    
-                    with cols_teams[col_idx]:
-                        st.markdown(f"""
-                        <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); padding: 10px; border-radius: 8px; text-align: center; margin-bottom: 10px;">
-                            {logo_html}
-                            <h4 style="margin: 0; color: #FAFAFA; font-size: 0.85rem;">{time_abrev}</h4>
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-                st.markdown("##### 📈 Temporada Regular (Carreira Inteira)")
-                df_exibicao = df_reg[['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PTS', 'AST', 'REB']].copy()
-                df_exibicao['PPG'] = (df_exibicao['PTS'] / df_exibicao['GP']).round(1)
-                df_exibicao['APG'] = (df_exibicao['AST'] / df_exibicao['GP']).round(1)
-                df_exibicao['RPG'] = (df_exibicao['REB'] / df_exibicao['GP']).round(1)
-                df_exibicao = df_exibicao[['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PPG', 'RPG', 'APG']]
-                df_exibicao.columns = ['Temporada', 'Time', 'Jogos', 'PPG', 'RPG', 'APG']
-                st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
+    st.divider()
 
-                if not df_play.empty:
-                    st.markdown("##### 💍 Playoffs (Carreira Inteira)")
-                    df_play_ex = df_play[['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PTS', 'AST', 'REB']].copy()
-                    df_play_ex['PPG'] = (df_play_ex['PTS'] / df_play_ex['GP']).round(1)
-                    df_play_ex['APG'] = (df_play_ex['AST'] / df_play_ex['GP']).round(1)
-                    df_play_ex['RPG'] = (df_play_ex['REB'] / df_play_ex['GP']).round(1)
-                    df_play_ex = df_play_ex[['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PPG', 'RPG', 'APG']]
-                    df_play_ex.columns = ['Temporada', 'Time', 'Jogos', 'PPG', 'RPG', 'APG']
-                    st.dataframe(df_play_ex, use_container_width=True, hide_index=True)
-            else:
-                st.warning("Histórico de carreira indisponível.")
+    # ==========================================
+    # 📰 FEED DE NOTÍCIAS EM TEMPO REAL
+    # ==========================================
+    st.markdown(f"### 📰 Latest News & Rumors: {jogador_nome}")
+    st.caption("Últimas atualizações, análises e movimentações coletadas em tempo real da web.")
+    
+    noticias = obter_noticias_jogador(jogador_nome)
+    
+    if noticias:
+        cols_news = st.columns(len(noticias) if len(noticias) <= 4 else 4)
+        for i, noticia in enumerate(noticias[:4]):
+            with cols_news[i]:
+                with st.container(border=True):
+                    st.markdown(f"**{noticia['titulo']}**")
+                    st.caption(f"📅 {noticia['data']}")
+                    st.markdown(f"[Ler matéria]({noticia['link']})")
+    else:
+        st.info("Nenhuma notícia recente encontrada no momento para este atleta.")
+
+    st.divider()
+
+    # ==========================================
+    # ⏳ TIMELINE DE CARREIRA & FRANQUIAS
+    # ==========================================
+    with st.expander("⏳ Ver Histórico Completo de Carreira (Franquias e Temporadas Anteriores)", expanded=False):
+        with st.spinner("Carregando linha do tempo da carreira..."):
+            df_reg, df_play = obter_timeline_carreira(jogador_id)
+        
+        if not df_reg.empty:
+            # CORREÇÃO: Força as colunas do Supabase para MAIÚSCULAS para manter compatibilidade
+            df_reg.columns = df_reg.columns.str.upper()
+            if not df_play.empty:
+                df_play.columns = df_play.columns.str.upper()
+
+            df_times_unicos = df_reg[df_reg['TEAM_ABBREVIATION'] != 'TOT'].copy()
+            times_passados = df_times_unicos['TEAM_ABBREVIATION'].unique()
+            
+            st.markdown("**Franquias Representadas na Carreira:**")
+            cols_teams = st.columns(len(times_passados) if len(times_passados) <= 6 else 6)
+            
+            for idx, time_abrev in enumerate(times_passados):
+                col_idx = idx % 6
+                logo_url_franquia = obter_url_logo_time(time_abrev)
+                logo_html = f'<img src="{logo_url_franquia}" width="38" style="margin-bottom: 6px;"/>' if logo_url_franquia else ''
+                
+                with cols_teams[col_idx]:
+                    st.markdown(f"""
+                    <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); padding: 10px; border-radius: 8px; text-align: center; margin-bottom: 10px;">
+                        {logo_html}
+                        <h4 style="margin: 0; color: #FAFAFA; font-size: 0.85rem;">{time_abrev}</h4>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            st.markdown("##### 📈 Temporada Regular (Carreira Inteira)")
+            df_exibicao = df_reg[['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PTS', 'AST', 'REB']].copy()
+            df_exibicao['PPG'] = (df_exibicao['PTS'] / df_exibicao['GP']).round(1)
+            df_exibicao['APG'] = (df_exibicao['AST'] / df_exibicao['GP']).round(1)
+            df_exibicao['RPG'] = (df_exibicao['REB'] / df_exibicao['GP']).round(1)
+            df_exibicao = df_exibicao[['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PPG', 'RPG', 'APG']]
+            df_exibicao.columns = ['Temporada', 'Time', 'Jogos', 'PPG', 'RPG', 'APG']
+            st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
+
+            if not df_play.empty:
+                st.markdown("##### 💍 Playoffs (Carreira Inteira)")
+                df_play_ex = df_play[['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PTS', 'AST', 'REB']].copy()
+                df_play_ex['PPG'] = (df_play_ex['PTS'] / df_play_ex['GP']).round(1)
+                df_play_ex['APG'] = (df_play_ex['AST'] / df_play_ex['GP']).round(1)
+                df_play_ex['RPG'] = (df_play_ex['REB'] / df_play_ex['GP']).round(1)
+                df_play_ex = df_play_ex[['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'PPG', 'RPG', 'APG']]
+                df_play_ex.columns = ['Temporada', 'Time', 'Jogos', 'PPG', 'RPG', 'APG']
+                st.dataframe(df_play_ex, use_container_width=True, hide_index=True)
+        else:
+            st.warning("Histórico de carreira indisponível.")

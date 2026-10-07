@@ -4,11 +4,10 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 from extrator import extrair_dados_defesa, extrair_dados_times
 from transformador import carregar_defesa_supabase, carregar_times_supabase
 from nba_api.stats.endpoints import leaguedashplayerstats
+from nba_api.stats.endpoints import commonallplayers
 
 # Carrega as senhas do arquivo .env ANTES de importar o banco
 load_dotenv()
-
-from nba_api.stats.endpoints import commonallplayers
 
 # --- IMPORTS DO EXTRATOR ---
 from extrator import (
@@ -17,7 +16,7 @@ from extrator import (
     buscar_estatisticas_avancadas_liga, 
     buscar_estatisticas_hustle_liga, 
     buscar_estatisticas_clutch_liga,
-    extrair_dados_defesa  # Nossa nova função!
+    extrair_dados_defesa
 )
 
 # --- IMPORTS DO TRANSFORMADOR ---
@@ -28,7 +27,7 @@ from transformador import (
     limpar_estatisticas_hustle, 
     limpar_estatisticas_clutch,
     criar_perfil_basico_liga,
-    carregar_defesa_supabase  # Nossa nova função!
+    carregar_defesa_supabase
 )
 
 # --- IMPORTS DO CARREGADOR ---
@@ -39,7 +38,7 @@ from carregador import (
     enviar_stats_hustle, 
     enviar_stats_clutch,
     limpar_dados_temporada_atual,
-    supabase # Puxando a conexão do banco para enviar pra função de defesa
+    supabase
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
@@ -63,6 +62,31 @@ def executar_atualizacao_diaria(temporada_atual="2026-27"):
     limpar_dados_temporada_atual(temporada_atual)
     
     try:
+        # ATALHO DAS ESTATÍSTICAS TRADICIONAIS E 3 PONTOS (Regular Season)
+        print("Baixando Estatísticas Tradicionais (Incluindo 3 Pontos)...")
+        tipo = "Regular Season"
+        df_trad = leaguedashplayerstats.LeagueDashPlayerStats(season=temporada_atual, season_type_all_star=tipo).get_data_frames()[0]
+        
+        lista_trad = []
+        for _, row in df_trad.iterrows():
+            if row['PLAYER_ID'] in ids_jogadores:
+                lista_trad.append({
+                    "jogador_id": int(row['PLAYER_ID']),
+                    "temporada": temporada_atual,
+                    "tipo_temporada": tipo,
+                    "time_abrev": row['TEAM_ABBREVIATION'],
+                    "idade": int(row['AGE']),
+                    "jogos_disputados": int(row['GP']),
+                    "pontos_totais": int(row['PTS']),
+                    "assistencias_totais": int(row['AST']),
+                    "rebotes_totais": int(row['REB']),
+                    # 👇 OS NOVOS CAMPOS AQUI 👇
+                    "fg3m_totais": int(row['FG3M']),
+                    "fg3a_totais": int(row['FG3A'])
+                })
+        
+        if lista_trad: enviar_estatisticas_para_banco(lista_trad)
+        
         bruto_adv, _ = buscar_estatisticas_avancadas_liga(temporada_atual)
         
         perfil_basico = criar_perfil_basico_liga(bruto_adv, temporada_atual)
@@ -85,7 +109,6 @@ def executar_atualizacao_diaria(temporada_atual="2026-27"):
         if filtrada_hustle: enviar_stats_hustle(filtrada_hustle)
         if filtrada_clutch: enviar_stats_clutch(filtrada_clutch)
         
-        # 👉 Defesa incluída na rotina diária
         df_defesa = extrair_dados_defesa(temporada_atual)
         if not df_defesa.empty:
             df_defesa = df_defesa[df_defesa['PLAYER_ID'].isin(ids_jogadores)]
@@ -98,10 +121,9 @@ def executar_atualizacao_diaria(temporada_atual="2026-27"):
 
 
 # =======================================================
-# ROTINA 2: CARGA HISTÓRICA COMPLETA (GUARDADA PARA USO FUTURO)
+# ROTINA 2: CARGA HISTÓRICA COMPLETA
 # =======================================================
 def executar_carga_historica(lista_temporadas):
-    """Loop que roda o ETL completo para todas as temporadas passadas."""
     print(f"--- INICIANDO CARGA HISTÓRICA ({len(lista_temporadas)} temporadas) ---")
     ids_jogadores = obter_ids_jogadores_ativos()
     
@@ -113,6 +135,26 @@ def executar_carga_historica(lista_temporadas):
         limpar_dados_temporada_atual(temporada)
         
         try:
+            tipo = "Regular Season"
+            df_trad = leaguedashplayerstats.LeagueDashPlayerStats(season=temporada, season_type_all_star=tipo).get_data_frames()[0]
+            lista_trad = []
+            for _, row in df_trad.iterrows():
+                if row['PLAYER_ID'] in ids_jogadores:
+                    lista_trad.append({
+                        "jogador_id": int(row['PLAYER_ID']),
+                        "temporada": temporada,
+                        "tipo_temporada": tipo,
+                        "time_abrev": row['TEAM_ABBREVIATION'],
+                        "idade": int(row['AGE']),
+                        "jogos_disputados": int(row['GP']),
+                        "pontos_totais": int(row['PTS']),
+                        "assistencias_totais": int(row['AST']),
+                        "rebotes_totais": int(row['REB']),
+                        "fg3m_totais": int(row['FG3M']),
+                        "fg3a_totais": int(row['FG3A'])
+                    })
+            if lista_trad: enviar_estatisticas_para_banco(lista_trad)
+
             bruto_adv, _ = buscar_estatisticas_avancadas_liga(temporada)
             perfil_basico = criar_perfil_basico_liga(bruto_adv, temporada)
             if perfil_basico: enviar_para_banco(perfil_basico)
@@ -145,13 +187,11 @@ def executar_carga_historica(lista_temporadas):
 
 
 # =======================================================
-# ROTINA 3: CARGA APENAS DE DEFESA (GUARDADA PARA USO FUTURO)
+# ROTINA 3: CARGAS EXCLUSIVAS (TIMES E DEFESA)
 # =======================================================
 def executar_carga_apenas_defesa(lista_temporadas):
-    """Loop focado APENAS em puxar os dados de Defesa."""
     print(f"--- INICIANDO CARGA EXCLUSIVA DE DEFESA ({len(lista_temporadas)} temporadas) ---")
     ids_jogadores = obter_ids_jogadores_ativos()
-    
     for temporada in lista_temporadas:
         try:
             df_defesa = extrair_dados_defesa(temporada)
@@ -163,45 +203,36 @@ def executar_carga_apenas_defesa(lista_temporadas):
         time.sleep(3)
 
 def executar_carga_apenas_times(lista_temporadas):
-    """Loop focado APENAS em puxar os dados dos Times."""
     print(f"--- INICIANDO CARGA EXCLUSIVA DE TIMES ({len(lista_temporadas)} temporadas) ---")
-    
     for temporada in lista_temporadas:
-        print(f"\n=========================================================")
-        print(f" PUXANDO TIMES: {temporada}")
-        print(f"=========================================================")
-        
+        print(f"\n PUXANDO TIMES: {temporada}")
         try:
             df_times = extrair_dados_times(temporada)
             if not df_times.empty:
                 carregar_times_supabase(df_times, supabase)
             else:
                 print("Nenhum dado de time retornado.")
-                
         except Exception as e:
             print(f"[ERRO NA TEMPORADA {temporada}]: {e}")
-            
         time.sleep(3)
-        
     print("\n--- CARGA DE TIMES CONCLUÍDA COM SUCESSO! ---")
-# Certifique-se de que os imports no topo do main.py estejam ok.
+
+# =======================================================
+# ROTINA 4: BACKFILL DE PLAYOFFS
+# =======================================================
 def executar_backfill_playoffs(lista_temporadas):
-    """Loop focado em puxar todas as tabelas dos Playoffs antigos."""
     print(f"--- INICIANDO DOWNLOAD COMPLETO DE PLAYOFFS ---")
     tipo = "Playoffs"
     
     for temporada in lista_temporadas:
         print(f"\nBaixando Playoffs da temporada: {temporada}")
         
-        # 1. Times
         df_times = extrair_dados_times(temporada, tipo)
         if not df_times.empty: carregar_times_supabase(df_times, supabase)
         
-        # 2. Defesa 
         df_def = extrair_dados_defesa(temporada, tipo)
         if not df_def.empty: carregar_defesa_supabase(df_def, supabase)
         
-        # 3. Avançadas (Jogadores)
         brutos_adv, _ = buscar_estatisticas_avancadas_liga(temporada, tipo)
         lista_adv = limpar_estatisticas_avancadas(brutos_adv, temporada, tipo)
         sucesso_adv = 0
@@ -212,12 +243,11 @@ def executar_backfill_playoffs(lista_temporadas):
             except: pass
         print(f"Avançadas: {sucesso_adv} inseridos.")
 
-        # 4. Tradicionais (Atalho: Puxa da liga inteira de uma vez)
         try:
             df_trad = leaguedashplayerstats.LeagueDashPlayerStats(season=temporada, season_type_all_star=tipo).get_data_frames()[0]
-            sucesso_trad = 0
+            lista_trad = []
             for _, row in df_trad.iterrows():
-                dados = {
+                lista_trad.append({
                     "jogador_id": int(row['PLAYER_ID']),
                     "temporada": temporada,
                     "tipo_temporada": tipo,
@@ -226,19 +256,21 @@ def executar_backfill_playoffs(lista_temporadas):
                     "jogos_disputados": int(row['GP']),
                     "pontos_totais": int(row['PTS']),
                     "assistencias_totais": int(row['AST']),
-                    "rebotes_totais": int(row['REB'])
-                }
-                try:
-                    supabase.table("estatisticas_temporada").insert(dados).execute()
-                    sucesso_trad += 1
-                except: pass
-            print(f"Tradicionais: {sucesso_trad} inseridos.")
+                    "rebotes_totais": int(row['REB']),
+                    # 👇 OS NOVOS CAMPOS DOS PLAYOFFS 👇
+                    "fg3m_totais": int(row['FG3M']),
+                    "fg3a_totais": int(row['FG3A'])
+                })
+            
+            if lista_trad:
+                # O Upsert substitui quem já existe, assim não gera erro
+                enviar_estatisticas_para_banco(lista_trad)
+                print(f"Tradicionais: Atualizados com 3 Pontos.")
         except Exception as e:
             print(f"Erro Tradicionais: {e}")
             
-        time.sleep(3) # Pausa dramática para a API não nos bloquear
+        time.sleep(3)
 
 if __name__ == "__main__":
-    temporadas = ["2026-27", "2025-26", "2024-25", "2023-24", "2022-23"]
-    # Comente a sua carga antiga e rode apenas essa para baixar os Playoffs!
-    executar_backfill_playoffs(temporadas)
+    # Deixei a atualização diária pronta para rodar
+    executar_atualizacao_diaria("2026-27")

@@ -1,6 +1,6 @@
 def analisar_perfil_posicional(perfil, stats):
     """
-    Analisa a posição base e as estatísticas (APG, RPG, USG) para determinar 
+    Analisa a posição base e as estatísticas para determinar 
     o papel tático real e a versatilidade posicional do atleta.
     """
     if not perfil or not stats:
@@ -19,14 +19,19 @@ def analisar_perfil_posicional(perfil, stats):
     apg = stats.get("assistencias_totais", 0) / jogos
     rpg = stats.get("rebotes_totais", 0) / jogos
     ppg = stats.get("pontos_totais", 0) / jogos
+    
+    # --- NOVAS MÉTRICAS DE PERÍMETRO ---
+    fg3a = stats.get("fg3a_totais", 0) / jogos
+    fg3m = stats.get("fg3m_totais", 0) / jogos
+    pct_3 = (fg3m / fg3a * 100) if fg3a > 0 else 0
 
-    # Casos especiais de elite / Playmakers universais (ex: LeBron, Jokic, Luka)
+    # Casos especiais de elite / Playmakers universais
     if "LEBRON" in nome or "DONCIC" in nome or "JOKIC" in nome or (apg >= 7 and rpg >= 7):
         return {
             "papel": "Primary Playmaker / Point-Forward",
             "posicao_ideal": "Ala / Armador Universal (Posições 1 a 4)",
             "versatilidade": "🌟 Extrema (Domínio absoluto em múltiplas funções)",
-            "dominancia": "Capaz de digitar o ritmo da partida, pontuar em alta eficiência e gerenciar o ataque como armador principal."
+            "dominancia": "Capaz de ditar o ritmo da partida, pontuar em alta eficiência e gerenciar o ataque."
         }
     
     # Armadores criadores de jogo
@@ -38,12 +43,20 @@ def analisar_perfil_posicional(perfil, stats):
                 "versatilidade": "⚡ Alta (cria para si e para os companheiros)",
                 "dominancia": "Controla o P&R (Pick and Roll), acha linhas de passe e define nos momentos críticos."
             }
+        # NOVO: Filtro de atirador de elite para armadores
+        elif fg3a >= 6.0 and pct_3 >= 37.0:
+            return {
+                "papel": "Perimeter Threat / Sharpshooter",
+                "posicao_ideal": "Armador / Ala-Armador (PG / SG)",
+                "versatilidade": "🔥 Ofensiva (Gravidade no perímetro)",
+                "dominancia": "Volume letal de 3 pontos. Distorce a defesa adversária apenas por estar posicionado na linha de 3."
+            }
         else:
             return {
                 "papel": "Scoring Guard / Ala-Armador de Impacto",
                 "posicao_ideal": "Armador / Ala-Armador (PG / SG)",
-                "versatilidade": " Moderada (foco em espaçamento e pontuação)",
-                "dominancia": "Especialista em arremessos de perímetro, transição rápida e pressão defensiva na bola."
+                "versatilidade": "Moderada (foco em espaçamento e pontuação)",
+                "dominancia": "Especialista em pontuação, transição rápida e pressão ofensiva na bola."
             }
             
     # Alas e Alas-Pivôs
@@ -52,8 +65,16 @@ def analisar_perfil_posicional(perfil, stats):
             return {
                 "papel": "Versatile Forward / Forward Dominante",
                 "posicao_ideal": "Ala-Pivô Moderno (SF / PF)",
-                "versatilidade": "🌟 Extrema (Troca de marcação em qualquer posição e puxa contra-ataques)",
-                "dominancia": "Mistura força no garrafão com visão de quadra de armador e arremesso exterior."
+                "versatilidade": "🌟 Extrema (Troca de marcação e puxa contra-ataques)",
+                "dominancia": "Mistura força no garrafão com visão de quadra de armador e presença exterior."
+            }
+        # NOVO: O Verdadeiro 3&D Wing (Volume de 3pts ao invés de apenas pontos gerais)
+        elif fg3a >= 4.5 and pct_3 >= 36.0:
+            return {
+                "papel": "3&D Wing / Elite Spacer",
+                "posicao_ideal": "Ala (SF / PF)",
+                "versatilidade": "⚡ Sólida (Defesa de perímetro e espaçamento)",
+                "dominancia": "Especialista em abrir a quadra (catch-and-shoot) e defender os alas adversários."
             }
         elif ppg >= 18:
             return {
@@ -64,10 +85,10 @@ def analisar_perfil_posicional(perfil, stats):
             }
         else:
             return {
-                "papel": "3&D Wing / Ala de Sistema",
+                "papel": "System Wing / Ala de Rotação",
                 "posicao_ideal": "Ala (SF / PF)",
-                "versatilidade": "⚡ Sólida (Defesa de perímetro e espaçamento)",
-                "dominancia": "Foco total em eficiência sem bola, contestação de arremessos e defesa de alas adversários."
+                "versatilidade": "Funcional",
+                "dominancia": "Atua no fluxo da equipe, focando em rebotes longos, cortes e defesa de sistema."
             }
             
     # Pivôs tradicionais ou modernos
@@ -79,11 +100,19 @@ def analisar_perfil_posicional(perfil, stats):
                 "versatilidade": "🌟 Alta (Passador de elite a partir do poste alto)",
                 "dominancia": "Atrai dobras no garrafão e pune a defesa com passes cirúrgicos para cortadores."
             }
+        # NOVO: O Pivô que arremessa de 3 (Stretch Big)
+        elif fg3a >= 3.0 and pct_3 >= 34.0:
+            return {
+                "papel": "Stretch Big / Pivô Espaçador",
+                "posicao_ideal": "Pivô Moderno (C / PF)",
+                "versatilidade": "🎯 Tática (Tira o protetor de aro do garrafão)",
+                "dominancia": "Arremessa de fora, obrigando o pivô adversário a sair da zona de conforto perto do aro."
+            }
         else:
             return {
                 "papel": "Rim Protector / Big Man Tradicional",
                 "posicao_ideal": "Pivô (C)",
-                "versatilidade": " Limitada ao garrafão",
+                "versatilidade": "Limitada ao garrafão",
                 "dominancia": "Domínio absoluto de rebotes defensivos, proteção de aro e finalizações aéreas (Pick and Roll)."
             }
             

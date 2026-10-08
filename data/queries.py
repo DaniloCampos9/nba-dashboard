@@ -41,6 +41,8 @@ def obter_estatisticas_resumo(jogador_id, temporada, tipo="Regular Season"):
             stats['pontos_totais'] = int(df['pontos_totais'].sum())
             stats['rebotes_totais'] = int(df['rebotes_totais'].sum())
             stats['assistencias_totais'] = int(df['assistencias_totais'].sum())
+            stats['fg3m_totais'] = int(df['fg3m_totais'].sum()) if 'fg3m_totais' in df.columns else 0
+            stats['fg3a_totais'] = int(df['fg3a_totais'].sum()) if 'fg3a_totais' in df.columns else 0
         if resp_adv.data:
             df = pd.DataFrame(resp_adv.data)
             stats['ts_pct'] = df['ts_pct'].mean()

@@ -1,7 +1,8 @@
-streamlit
+streamlit>=1.36.0
 pandas
+supabase
 plotly
 nba_api
-supabase
 python-dotenv
 tenacity
+pyarrow

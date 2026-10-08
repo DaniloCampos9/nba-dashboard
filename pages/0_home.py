@@ -8,15 +8,15 @@ col1, col2 = st.columns([2, 1])
 
 with col1:
     st.markdown("""
-    Esta aplicação foi desenvolvida sob rigorosos padrões de **Engenharia de Dados e Análise Esportiva**, integrando dados oficiais da NBA API e Supabase para entregar insights profundos que vão muito além do box-score tradicional.
-    
-    ### 🚀 O que você encontra por aqui:
-    * **📊 Overview & Player Snapshot:** Cartões de KPIs avançados (True Shooting, Usage Rate, Net Rating, PIE), **Arquétipos Estilo NBA 2K**, feed de notícias em tempo real e linha do tempo completa de carreira com logotipos das franquias.
-    * **🎯 Offensive & Defensive Profiles:** Gráficos de dispersão de volume e eficiência, além de métricas de esforço (*Hustle* e *Deflections*).
-    * **🗺️ Shot Charts:** Mapeamento espacial interativo de arremessos em quadra.
-    * **⚔️ Player Comparison:** Confronto direto entre até 3 atletas ou versões históricas de um mesmo jogador (incluindo Playoffs).
-    * **🏀 Team Analytics:** Análise de sistema, ritmo (*Pace*) e quadrantes de eficiência da liga (*Contenders*, *Tiroteio*, *Trincheira* e *Loteria*).
-    """)
+        Esta aplicação foi desenvolvida sob rigorosos padrões de **Engenharia de Dados e Análise Esportiva**, integrando dados oficiais da NBA API e Supabase para entregar insights profundos que vão muito além do box-score tradicional.
+        
+        ### 🚀 O que você encontra por aqui:
+        * **📊 Overview & Player Snapshot:** Cartões de KPIs avançados, **AI Scouting Report dinâmico**, eficiência de perímetro, **Arquétipos da NBA Moderna** (incluindo Stretch Bigs e 3&D), feed de notícias em tempo real e linha do tempo de franquias.
+        * **🎯 Offensive & Defensive Profiles:** Gráficos de dispersão de volume e eficiência, além de métricas de esforço (*Hustle*, *Deflections* e *Proteção de Aro*).
+        * **🗺️ Shot Charts:** Mapeamento espacial interativo de arremessos na meia-quadra.
+        * **⚔️ Player Comparison:** Confronto direto entre até 3 atletas ou versões históricas (incluindo recortes exclusivos de Playoffs).
+        * **🏀 Team Analytics:** Análise de sistema, ritmo (*Pace*) e quadrantes de eficiência da liga.
+        """)
 
 with col2:
     st.info("""

@@ -14,6 +14,7 @@ from utils.archetypes import classificar_arquetipo
 from utils.news import obter_noticias_jogador
 from utils.logos import obter_url_logo_time
 from utils.position_analyzer import analisar_perfil_posicional 
+from utils.narrative_engine import gerar_scouting_report_dinamico
 
 jogador_nome = st.session_state.get('filtro_jogador')
 
@@ -31,6 +32,9 @@ if perfil:
     tipo_temporada = st.session_state.get('filtro_tipo_temporada', 'Regular Season')
     
     stats = obter_estatisticas_resumo(jogador_id, temporada_selecionada, tipo_temporada)
+    if not stats:
+        st.warning(f"Não há dados suficientes ou o jogador não atuou na temporada {temporada_selecionada} ({tipo_temporada}).")
+        st.stop()
     def_stats = obter_estatisticas_defesa(jogador_id, temporada_selecionada, tipo_temporada)
     arquetipo = classificar_arquetipo(stats, def_stats)
     perfil_tatico = analisar_perfil_posicional(perfil, stats)
@@ -108,6 +112,16 @@ if perfil:
         st.markdown(f"**Físico:** {altura} ft, {peso} lbs &nbsp;&nbsp;|&nbsp;&nbsp; **Draft:** {ano_draft} &nbsp;&nbsp;|&nbsp;&nbsp; **País:** {pais}")
         st.caption(f"Analisando dados da temporada **{temporada_selecionada}** ({tipo_temporada})")
         
+        with st.container(border=True):
+            st.markdown("#### 🕵️‍♂️ AI Scouting Report")
+            relatorio = gerar_scouting_report_dinamico(
+                nome=perfil.get("nome_completo", jogador_nome), 
+                stats=stats, 
+                def_stats=def_stats, 
+                perfil_tatico=perfil_tatico
+            )
+            st.info(relatorio)
+    
     st.divider()
 
     # ==========================================
@@ -184,6 +198,25 @@ if perfil:
             col4.metric("AST%", f"{round(stats.get('ast_pct', 0) * 100, 1)}%")
 
     st.divider()
+    
+    # === NOVO BLOCO: MACRO VISÃO DO PERÍMETRO ===
+    st.markdown("### 🎯 Eficiência de Perímetro")
+    
+    # Cálculos à prova de falhas (divisão por zero)
+    jogos_validos = stats.get("jogos_disputados", 1) if stats else 1
+    if jogos_validos == 0: jogos_validos = 1
+    
+    fg3m = stats.get("fg3m_totais", 0) / jogos_validos if stats else 0
+    fg3a = stats.get("fg3a_totais", 0) / jogos_validos if stats else 0
+    pct_3 = (fg3m / fg3a * 100) if fg3a > 0 else 0
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Aproveitamento (3P%)", f"{pct_3:.1f}%")
+    c2.metric("Volume (3PA/jogo)", f"{fg3a:.1f}")
+    c3.metric("Conversão (3PM/jogo)", f"{fg3m:.1f}")
+    
+    st.divider()
+    # === FIM DO NOVO BLOCO ===
     
     # ==========================================
     # CONFRONTO CONTRA A LIGA (SEU CÓDIGO ORIGINAL)

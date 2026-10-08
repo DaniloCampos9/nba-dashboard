@@ -30,7 +30,7 @@ with aba_efi:
         **O que mede:** A eficiência real de pontuação de um jogador.
         - **Fórmula:** `Pontos / (2 * (FGA + 0.44 * FTA))`
         - **Como interpretar:** É a métrica definitiva para avaliar se um jogador arremessa bem. Diferente do FG% (aproveitamento de quadra normal), o TS% dá o peso matemático correto para as bolas de 3 pontos (que valem mais) e inclui a habilidade de cavar e converter lances livres.
-        - **Referência:** A média da liga costuma ficar em torno de **57% a 58%**. Estrelas de elite ultrapassam os **62%**.
+        - **Referência:** A média da liga costuma ficar em torno de **57 porcento a 58%**. Estrelas de elite ultrapassam os **62%**.
         """)
         
     with st.expander("eFG% (Effective Field Goal Percentage)"):
@@ -46,7 +46,7 @@ with aba_uso:
         st.markdown("""
         **O que mede:** A porcentagem das posses de bola da equipe que "terminam" nas mãos do jogador enquanto ele está em quadra.
         - **Como interpretar:** Uma posse "termina" com o jogador quando ele arremessa, sofre falta para ir ao lance livre ou comete um turnover. Mostra o peso da responsabilidade ofensiva.
-        - **Referência:** Um USG% de **20%** é a média exata (1/5 do time). Astros de altíssimo volume (como Luka Doncic ou Joel Embiid) operam na casa dos **32% a 38%**.
+        - **Referência:** Um USG de **20%** é a média exata (1/5 do time). Astros de altíssimo volume (como Luka Doncic ou Joel Embiid) operam na casa dos **32% a 38%**.
         """)
         
     with st.expander("AST% (Assist Percentage)"):
@@ -72,6 +72,23 @@ with aba_imp:
         
     with st.expander("PIE (Player Impact Estimate)"):
         st.markdown("""
-        **O que mede:** Métrica oficial da NBA que estima a % de eventos do jogo nos quais o jogador se envolveu positivamente.
+        **O que mede:** Métrica oficial da NBA que estima a porcentagem de eventos do jogo nos quais o jogador se envolveu positivamente.
         - **Como interpretar:** Uma "nota geral" de impacto estatístico cru na partida. Leva em conta pontos, tocos, rebotes e pune turnovers e erros.
+        """)
+        
+    with aba_perimetro:
+        st.subheader("Métricas de Perímetro e Papéis Táticos")
+    
+    with st.expander("3PM, 3PA e 3P% (Volume e Precisão)", expanded=True):
+        st.markdown("""
+        **O que medem:** Bolas de 3 Convertidas (Made), Tentadas (Attempted) e o Aproveitamento (%).
+        - **Como interpretar:** Na NBA moderna, o volume (3PA) é tão importante quanto a precisão. Jogadores que arremessam mais de 6 vezes por jogo com um aproveitamento acima de 37% possuem **"Gravidade Ofensiva"**, obrigando a defesa a marcá-los longe da cesta e abrindo espaço para infiltrações do resto do time.
+        """)
+        
+    with st.expander("Arquétipos e Perfis Posicionais"):
+        st.markdown("""
+        O painel classifica os jogadores combinando volume de uso, impacto defensivo e arremessos de fora para criar definições exatas de seu papel, tais como:
+        - **Stretch Big:** Pivôs que arremessam bolas de 3 pontos, puxando o protetor de aro adversário para fora do garrafão.
+        - **3&D Specialist:** Alas que não precisam da bola nas mãos (Baixo USG%), focados em converter tiros de 3 pontos em transição ou passes de astros, enquanto defendem o melhor jogador adversário.
+        - **Franchise Cornerstone:** A âncora da equipe. Jogadores com altíssimo Volume de Uso (USG% > 28) e grande impacto estatístico global (PIE).
         """)

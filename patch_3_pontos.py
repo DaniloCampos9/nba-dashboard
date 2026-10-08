@@ -1,62 +1,92 @@
 import time
-from nba_api.stats.endpoints import leaguedashplayerstats
+from nba_api.stats.endpoints import playercareerstats
 from carregador import supabase, dividir_em_lotes
-from tenacity import retry, stop_after_attempt, wait_fixed
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
-def atualizar_3_pontos_no_supabase(lote):
-    supabase.table("estatisticas_temporada").upsert(lote).execute()
+def montar_payload(row, temporada, tipo):
+    """Reconstrói a linha completa para garantir um upsert perfeito."""
+    return {
+        "jogador_id": int(row['PLAYER_ID']),
+        "temporada": temporada,
+        "tipo_temporada": tipo,
+        "time_abrev": row['TEAM_ABBREVIATION'],
+        "idade": int(row['PLAYER_AGE']),
+        "jogos_disputados": int(row['GP']),
+        "pontos_totais": int(row['PTS']),
+        "assistencias_totais": int(row['AST']),
+        "rebotes_totais": int(row['REB']),
+        "fg3m_totais": int(row['FG3M']),
+        "fg3a_totais": int(row['FG3A'])
+    }
 
-# Retiramos os headers e colocamos uma espera de 30 SEGUNDOS caso dê erro (tempo pro firewall esfriar)
-@retry(stop=stop_after_attempt(4), wait=wait_fixed(30))
-def buscar_dados_nba_com_paciencia(temporada, tipo):
-    print(f"   ⏳ Conectando aos servidores da NBA para {temporada} ({tipo})...")
-    # Usando o padrão nativo da biblioteca, mas com timeout estendido para não dar 'Read timed out'
-    return leaguedashplayerstats.LeagueDashPlayerStats(
-        season=temporada, 
-        season_type_all_star=tipo,
-        timeout=60
-    ).get_data_frames()[0]
-
-def resgatar_bolas_de_3_passadas():
-    # Focando apenas no que faltou
-    temporadas = ["2024-25", "2023-24", "2022-23"]
-    tipos = ["Regular Season", "Playoffs"]
+def resgatar_bolas_de_3_via_carreira():
+    print("🚀 INICIANDO RESGATE VIA HISTÓRICO DE CARREIRA (MÉTODO SHOT CHART)")
     
-    print("🚀 INICIANDO O RESGATE COM PACIÊNCIA TIBETANA (SEM HEADERS CUSTOMIZADOS)")
+    # 1. Busca os IDs diretamente do banco local
+    resp = supabase.table("jogadores").select("id, nome_completo").execute()
+    jogadores = resp.data
     
-    for temporada in temporadas:
-        for tipo in tipos:
-            print(f"\n👉 Puxando {tipo} da temporada {temporada}...")
+    # 2. Filtros exatos das pendências
+    alvos = {
+        "2024-25": ["Playoffs"],
+        "2023-24": ["Regular Season", "Playoffs"],
+        "2022-23": ["Regular Season", "Playoffs"]
+    }
+    
+    lista_atualizacao = []
+    
+    for idx, jogador in enumerate(jogadores):
+        player_id = jogador['id']
+        nome = jogador['nome_completo']
+        
+        print(f"[{idx+1}/{len(jogadores)}] A extrair carreira de {nome}...")
+        
+        tentativas = 0
+        while tentativas < 3:
             try:
-                df = buscar_dados_nba_com_paciencia(temporada, tipo)
+                # Pausa idêntica à do carga_especial.py para não acionar o firewall
+                time.sleep(1.5)
                 
-                if df.empty:
-                    print("   ℹ️ Nenhum dado encontrado para este corte.")
-                    continue
+                carreira = playercareerstats.PlayerCareerStats(player_id=player_id, timeout=30)
                 
-                lista_atualizacao = []
-                for _, row in df.iterrows():
-                    lista_atualizacao.append({
-                        "jogador_id": int(row['PLAYER_ID']),
-                        "temporada": temporada,
-                        "tipo_temporada": tipo,
-                        "fg3m_totais": int(row['FG3M']),
-                        "fg3a_totais": int(row['FG3A'])
-                    })
+                df_reg = carreira.get_data_frames()[0]  # Regular Season
+                df_play = carreira.get_data_frames()[2] # Playoffs
                 
-                for lote in dividir_em_lotes(lista_atualizacao, 100):
-                    atualizar_3_pontos_no_supabase(lote)
-                
-                print(f"✅ Atualização de {temporada} ({tipo}) concluída com sucesso!")
+                # Procura as temporadas alvo na Regular Season
+                if not df_reg.empty:
+                    for _, row in df_reg.iterrows():
+                        temporada = row['SEASON_ID']
+                        if temporada in alvos and "Regular Season" in alvos[temporada]:
+                            lista_atualizacao.append(montar_payload(row, temporada, "Regular Season"))
+                            
+                # Procura as temporadas alvo nos Playoffs
+                if not df_play.empty:
+                    for _, row in df_play.iterrows():
+                        temporada = row['SEASON_ID']
+                        if temporada in alvos and "Playoffs" in alvos[temporada]:
+                            lista_atualizacao.append(montar_payload(row, temporada, "Playoffs"))
+                            
+                break # Sucesso, sai do loop de tentativas
                 
             except Exception as e:
-                print(f"❌ Erro final após todas as tentativas: {e}")
-                
-            # O segredo: 15 segundos de pausa entre CADA requisição. 
-            # Vai demorar uns 2 minutinhos no total, mas passa liso pelo radar.
-            print("   💤 Descansando 15 segundos para não alertar a NBA...")
-            time.sleep(15) 
+                tentativas += 1
+                if tentativas < 3:
+                    print(f"  ⏳ Tropeço na API. A respirar 5s...")
+                    time.sleep(5)
+                else:
+                    print(f"  ❌ Erro definitivo ao puxar {nome}: {e}")
+                    
+        # Salva no banco em pequenos lotes e limpa a memória para não sobrecarregar
+        if len(lista_atualizacao) >= 100:
+            for lote in dividir_em_lotes(lista_atualizacao, 100):
+                supabase.table("estatisticas_temporada").upsert(lote).execute()
+            lista_atualizacao = []
 
-if __name__ == "__main__":
-    resgatar_bolas_de_3_passadas()
+    # Salva os últimos registros residuais que sobraram na lista
+    if lista_atualizacao:
+        for lote in dividir_em_lotes(lista_atualizacao, 100):
+            supabase.table("estatisticas_temporada").upsert(lote).execute()
+            
+    print("✅ Resgate histórico finalizado com sucesso!")
+
+if __name__ == '__main__':
+    resgatar_bolas_de_3_via_carreira()

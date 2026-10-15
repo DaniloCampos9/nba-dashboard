@@ -178,3 +178,73 @@ def grafico_mapa_arremessos(df_shots):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
     )
     return fig
+
+def grafico_radar_comparativo(atletas_validos):
+    """
+    Gera um Spider Chart (Radar) normalizado comparando o DNA de até 3 jogadores.
+    """
+    if not atletas_validos:
+        return None
+        
+    fig = go.Figure()
+    
+    # Paleta de cores moderna: Azul NBA, Vermelho Alerta e Dourado
+    cores_linha = ['#1D428A', '#FF4B4B', '#FFD700'] 
+    cores_fundo = ['rgba(29, 66, 138, 0.3)', 'rgba(255, 75, 75, 0.3)', 'rgba(255, 215, 0, 0.3)']
+    
+    # Os 6 eixos do nosso DNA analítico
+    categorias = ['Pontuação (PPG)', 'Rebotes (RPG)', 'Playmaking (APG)', 
+                  'Eficiência (TS%)', 'Volume (USG%)', 'Impacto (PIE)']
+                  
+    for idx, a in enumerate(atletas_validos):
+        stats = a["stats"]
+        jogos = stats.get("jogos_disputados", 1)
+        if jogos == 0: jogos = 1
+        
+        # Extração bruta
+        ppg = stats.get("pontos_totais", 0) / jogos
+        rpg = stats.get("rebotes_totais", 0) / jogos
+        apg = stats.get("assistencias_totais", 0) / jogos
+        ts = (stats.get("ts_pct") or 0) * 100
+        usg = (stats.get("usg_pct") or 0) * 100
+        pie = (stats.get("pie") or 0) * 100
+        
+        # Normalização matemática (0 a 100) baseada em tetos realistas da NBA
+        # (ex: 35 pts = nota 100 em Pontuação)
+        valores_normalizados = [
+            min((ppg / 35) * 100, 100),
+            min((rpg / 15) * 100, 100),
+            min((apg / 12) * 100, 100),
+            min((ts / 70) * 100, 100),
+            min((usg / 40) * 100, 100),
+            min((pie / 20) * 100, 100)
+        ]
+        
+        # O Plotly exige que o último valor seja igual ao primeiro para fechar o polígono do radar
+        valores_normalizados.append(valores_normalizados[0])
+        categorias_fechadas = categorias + [categorias[0]]
+        
+        fig.add_trace(go.Scatterpolar(
+            r=valores_normalizados,
+            theta=categorias_fechadas,
+            fill='toself',
+            name=a["nome"],
+            line=dict(color=cores_linha[idx % 3], width=2.5),
+            fillcolor=cores_fundo[idx % 3],
+            hovertemplate="<b>%{theta}</b><br>Score Relativo: %{r:.1f}/100<extra></extra>"
+        ))
+
+    # Estilização visual (Fundo escuro, linhas de grade sutis)
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 100], showticklabels=False, gridcolor="rgba(255,255,255,0.15)"),
+            angularaxis=dict(gridcolor="rgba(255,255,255,0.15)", tickfont=dict(size=12, color="#FAFAFA"))
+        ),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=40, r=40, t=40, b=40),
+        height=450
+    )
+    return fig

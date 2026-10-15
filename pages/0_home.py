@@ -1,34 +1,40 @@
 import streamlit as st
+from components.navigation import renderizar_menu_superior
 
-st.title("🏀 NBA Advanced Analytics Hub")
-st.markdown("### Bem-vindo à plataforma definitiva de inteligência, tracking e estatísticas avançadas da NBA.")
-st.divider()
+renderizar_menu_superior()
 
-col1, col2 = st.columns([2, 1])
+# Hero Section
+st.markdown("""
+<div style='text-align: center; padding: 3rem 0;'>
+    <h1 style='font-size: 3.5rem; margin-bottom: 0;'>NBA Advanced Analytics</h1>
+    <p style='font-size: 1.2rem; color: #888; max-width: 600px; margin: 10px auto;'>
+        Inteligência de basquete levada a sério. Vá além do box-score com rastreamento espacial, 
+        arquétipos táticos de IA e métricas de eficiência em um ecossistema fluído.
+    </p>
+</div>
+""", unsafe_allow_html=True)
 
-with col1:
-    st.markdown("""
-        Esta aplicação foi desenvolvida sob rigorosos padrões de **Engenharia de Dados e Análise Esportiva**, integrando dados oficiais da NBA API e Supabase para entregar insights profundos que vão muito além do box-score tradicional.
-        
-        ### 🚀 O que você encontra por aqui:
-        * **📊 Overview & Player Snapshot:** Cartões de KPIs avançados, **AI Scouting Report dinâmico**, eficiência de perímetro, **Arquétipos da NBA Moderna** (incluindo Stretch Bigs e 3&D), feed de notícias em tempo real e linha do tempo de franquias.
-        * **🎯 Offensive & Defensive Profiles:** Gráficos de dispersão de volume e eficiência, além de métricas de esforço (*Hustle*, *Deflections* e *Proteção de Aro*).
-        * **🗺️ Shot Charts:** Mapeamento espacial interativo de arremessos na meia-quadra.
-        * **⚔️ Player Comparison:** Confronto direto entre até 3 atletas ou versões históricas (incluindo recortes exclusivos de Playoffs).
-        * **🏀 Team Analytics:** Análise de sistema, ritmo (*Pace*) e quadrantes de eficiência da liga.
-        """)
-
-with col2:
-    st.info("""
-    👈 **Como Começar:**
-    
-    1. Vá até a **barra lateral** à esquerda.
-    2. Selecione a **Temporada** desejada.
-    3. Escolha o **Tipo de Temporada** (Regular Season, Playoffs ou Ambos).
-    4. Selecione o **Jogador** que deseja analisar.
-    
-    Explore todas as abas no menu superior!
-    """)
+col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+with col_btn2:
+    if st.button("🚀 Iniciar Análise de Jogadores", use_container_width=True, type="primary"):
+        st.switch_page("pages/1_overview.py")
 
 st.divider()
-st.markdown("*(Dica: Selecione um atleta na barra lateral e clique na aba **Overview** no menu superior para iniciar sua imersão analítica.)*")
+
+# Value Props (Funcionalidades Explicadas de Forma Simples)
+c1, c2, c3 = st.columns(3)
+
+with c1:
+    with st.container(border=True):
+        st.markdown("### 🧬 DNA de Jogadores")
+        st.markdown("Descubra o **Arquétipo** exato do atleta (ex: *Stretch Big*, *3&D Specialist*). Analise relatórios de *Scouting* gerados por IA e mapas de arremesso interativos.")
+
+with c2:
+    with st.container(border=True):
+        st.markdown("### 🏢 Raio-X de Franquias")
+        st.markdown("Não olhe apenas para vitórias. Entenda o **Pace** (Ritmo de jogo), o saldo de pontos por posse (*Net Rating*) e mergulhe no Depth Chart da rotação de banco.")
+
+with c3:
+    with st.container(border=True):
+        st.markdown("### ⚔️ Confronto Direto")
+        st.markdown("Compare até 3 jogadores lado a lado. Os radares de atributos normalizam as estatísticas para que você compare um armador com um pivô de forma justa.")

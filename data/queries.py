@@ -3,14 +3,32 @@ import pandas as pd
 import io
 from data.db import supabase
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400) 
 def obter_lista_jogadores():
     try:
-        resposta = supabase.table("jogadores").select("nome_completo").execute()
-        jogadores = [linha['nome_completo'] for linha in resposta.data if linha.get('nome_completo')]
-        return sorted(jogadores)
+        nomes = set()
+        inicio = 0
+        tamanho_pagina = 1000
+        
+        while True:
+            resp = supabase.table("jogadores").select("nome_completo").range(inicio, inicio + tamanho_pagina - 1).execute()
+            
+            if not resp.data:
+                break
+                
+            for row in resp.data:
+                if row.get('nome_completo'):
+                    nomes.add(row['nome_completo'])
+            
+            if len(resp.data) < tamanho_pagina:
+                break
+                
+            inicio += tamanho_pagina
+            
+        return sorted(list(nomes))
     except Exception as e:
-        return ["Erro ao carregar"]
+        print(f"Erro ao carregar lista de jogadores: {e}")
+        return []
 
 def obter_perfil_jogador(nome_jogador):
     try:
@@ -221,9 +239,14 @@ def obter_lista_times(temporada):
     try:
         resp = supabase.table("stats_times").select("nome_time").eq("temporada", temporada).execute()
         times = list(set([linha['nome_time'] for linha in resp.data if linha.get('nome_time')]))
+        
+        # 👇 A CORREÇÃO ESTÁ AQUI: Se a lista do banco vier vazia, usamos o dicionário oficial!
+        if not times:
+            return sorted(list(TEAM_MAPPING.keys()))
+            
         return sorted(times)
     except Exception:
-        # Fallback de segurança usando nosso próprio dicionário
+        # Fallback de segurança em caso de erro na conexão
         return sorted(list(TEAM_MAPPING.keys()))
 
 @st.cache_data(ttl=3600)
@@ -239,28 +262,51 @@ def obter_identidade_time(nome_time, temporada, tipo="Regular Season"):
 
 @st.cache_data(ttl=3600)
 def obter_elenco_time(nome_time, temporada, tipo="Regular Season"):
-    """Cruza a tabela de temporada e jogadores para montar a tabela de rotação avançada (Sem Duplicatas)."""
+    """Cruza a tabela de temporada e jogadores para montar a tabela de rotação avançada (Ordenada por Minutos ou Pontos)."""
     abrev = TEAM_MAPPING.get(nome_time)
     if not abrev: return pd.DataFrame()
     
     try:
-        q_trad = supabase.table("estatisticas_temporada").select("jogador_id, jogos_disputados, pontos_totais, rebotes_totais, assistencias_totais").eq("temporada", temporada).eq("time_abrev", abrev)
+        q_trad = supabase.table("estatisticas_temporada").select("jogador_id, jogos_disputados, minutos_totais, pontos_totais, rebotes_totais, assistencias_totais").eq("temporada", temporada).eq("time_abrev", abrev)
         resp_trad = aplicar_filtro(q_trad, tipo).execute()
         
+        if not resp_trad.data:
+            from nba_api.stats.static import teams
+            time_info = teams.find_team_by_abbreviation(abrev)
+            if not time_info: return pd.DataFrame()
+            
+            resp_jog = supabase.table("jogadores").select("id, nome_completo, posicao").eq("time_atual_id", time_info['id']).execute()
+            if not resp_jog.data: return pd.DataFrame()
+            
+            df_jog = pd.DataFrame(resp_jog.data).rename(columns={"id": "jogador_id"})
+            for col in ['jogos_disputados', 'MPG', 'PPG', 'RPG', 'APG', 'ts_pct', 'usg_pct', 'net_rating']:
+                df_jog[col] = 0.0
+            
+            ids = df_jog['jogador_id'].tolist()
+            resp_past = supabase.table("estatisticas_temporada").select("jogador_id, minutos_totais, jogos_disputados").eq("temporada", "2025-26").in_("jogador_id", ids).execute()
+            
+            if resp_past.data:
+                df_past = pd.DataFrame(resp_past.data)
+                df_past = df_past[df_past['jogos_disputados'] > 0].copy()
+                df_past['minutos_totais'] = pd.to_numeric(df_past.get('minutos_totais', 0), errors='coerce').fillna(0.0)
+                df_past['MPG_past'] = (df_past['minutos_totais'] / df_past['jogos_disputados']).fillna(0.0)
+                
+                df_jog = pd.merge(df_jog, df_past[['jogador_id', 'MPG_past']], on="jogador_id", how="left").fillna(0)
+                return df_jog.sort_values(by=["MPG_past", "PPG"], ascending=[False, False]).drop(columns=['MPG_past']).reset_index(drop=True)
+                
+            return df_jog
+
         q_adv = supabase.table("stats_avancadas").select("jogador_id, ts_pct, usg_pct, net_rating").eq("temporada", temporada)
         resp_adv = aplicar_filtro(q_adv, tipo).execute()
-        
-        if not resp_trad.data: return pd.DataFrame()
         
         df_trad = pd.DataFrame(resp_trad.data)
         df_adv = pd.DataFrame(resp_adv.data) if resp_adv.data else pd.DataFrame()
         
         ids_jogadores = df_trad['jogador_id'].tolist()
-        resp_jog = supabase.table("jogadores").select("id, nome_completo").in_("id", ids_jogadores).execute()
+        resp_jog = supabase.table("jogadores").select("id, nome_completo, posicao").in_("id", ids_jogadores).execute()
         df_jog = pd.DataFrame(resp_jog.data) if resp_jog.data else pd.DataFrame()
         
         if not df_jog.empty:
-            # CORREÇÃO: Limpa qualquer duplicata residual do banco antes do cruzamento
             df_trad = df_trad.drop_duplicates(subset=['jogador_id'])
             df_adv = df_adv.drop_duplicates(subset=['jogador_id'])
             df_jog = df_jog.drop_duplicates(subset=['id'])
@@ -269,15 +315,31 @@ def obter_elenco_time(nome_time, temporada, tipo="Regular Season"):
             if not df_adv.empty:
                 df = pd.merge(df, df_adv, on="jogador_id", how="left")
                 
-            df = df[df['jogos_disputados'] > 0]
-            df['PPG'] = round(df['pontos_totais'] / df['jogos_disputados'], 1)
-            df['RPG'] = round(df['rebotes_totais'] / df['jogos_disputados'], 1)
-            df['APG'] = round(df['assistencias_totais'] / df['jogos_disputados'], 1)
+            df = df[df['jogos_disputados'] > 0].copy()
             
-            return df.sort_values(by="PPG", ascending=False).reset_index(drop=True)
+            # TRATAMENTO ROBUSTO CONTRA NAN
+            if 'minutos_totais' not in df.columns:
+                df['minutos_totais'] = 0.0
+            
+            df['minutos_totais'] = pd.to_numeric(df['minutos_totais'], errors='coerce').fillna(0.0)
+            df['MPG'] = (df['minutos_totais'] / df['jogos_disputados']).round(1).fillna(0.0)
+            
+            df['PPG'] = (df['pontos_totais'] / df['jogos_disputados']).round(1).fillna(0.0)
+            df['RPG'] = (df['rebotes_totais'] / df['jogos_disputados']).round(1).fillna(0.0)
+            df['APG'] = (df['assistencias_totais'] / df['jogos_disputados']).round(1).fillna(0.0)
+            
+            for col in ['ts_pct', 'usg_pct', 'net_rating']:
+                if col not in df.columns: df[col] = 0.0
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+                    
+            # ORDENAÇÃO SEGURA: Primeiro por Minutos, depois por Pontos
+            return df.sort_values(by=["MPG", "PPG"], ascending=[False, False]).reset_index(drop=True)
+            
         return pd.DataFrame()
-    except Exception: return pd.DataFrame()
-
+    except Exception as e: 
+        print(f"Erro obter_elenco_time: {e}")
+        return pd.DataFrame()
+    
 @st.cache_data(ttl=3600)
 def obter_momento_recente(nome_time, temporada):
     """Busca os números dos últimos 10 jogos diretamente da NBA API, com segurança."""

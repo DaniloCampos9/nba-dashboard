@@ -1,10 +1,13 @@
 import time
 from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_fixed
+import pandas as pd
 from extrator import extrair_dados_defesa, extrair_dados_times
 from transformador import carregar_defesa_supabase, carregar_times_supabase
 from nba_api.stats.endpoints import leaguedashplayerstats
 from nba_api.stats.endpoints import commonallplayers
+from nba_api.stats.endpoints import commonteamroster
+from nba_api.stats.static import teams
 
 # Carrega as senhas do arquivo .env ANTES de importar o banco
 load_dotenv()
@@ -38,6 +41,7 @@ from carregador import (
     enviar_stats_hustle, 
     enviar_stats_clutch,
     limpar_dados_temporada_atual,
+    dividir_em_lotes,
     supabase
 )
 
@@ -50,9 +54,33 @@ def obter_ids_jogadores_ativos():
     print(f"Total de {len(ids)} jogadores encontrados.\n")
     return ids
 
+# =======================================================
+# ROTINA 0: CARGA CADASTRAL DE JOGADORES HISTÓRICOS
+# =======================================================
+def carregar_jogadores_historicos_banco():
+    """Busca lendas e jogadores inativos (Kobe, Bird, etc) e salva no Supabase."""
+    print("--- INICIANDO CARGA CADASTRAL DE JOGADORES HISTÓRICOS ---")
+    try:
+        df_completo = commonallplayers.CommonAllPlayers(is_only_current_season=0).get_data_frames()[0]
+        
+        jogadores_cadastro = []
+        for _, row in df_completo.iterrows():
+            jogadores_cadastro.append({
+                "id": int(row['PERSON_ID']),
+                "nome_completo": row['DISPLAY_FIRST_LAST']
+                # Não preenchemos time_atual_id pois muitos estão aposentados
+            })
+        
+        if jogadores_cadastro:
+            print(f"Salvando {len(jogadores_cadastro)} jogadores no banco...")
+            for lote in dividir_em_lotes(jogadores_cadastro, 100):
+                supabase.table("jogadores").upsert(lote).execute()
+            print("✅ Jogadores históricos carregados com sucesso no Supabase!")
+    except Exception as e:
+        print(f"Erro ao carregar jogadores históricos: {e}")
 
 # =======================================================
-# ROTINA 1: ATUALIZAÇÃO DIÁRIA (A QUE VAMOS DEIXAR LIGADA)
+# ROTINA 1: ATUALIZAÇÃO DIÁRIA
 # =======================================================
 def executar_atualizacao_diaria(temporada_atual="2026-27"):
     """Rotina ultrarrápida otimizada para rodar diariamente no PC."""
@@ -62,7 +90,6 @@ def executar_atualizacao_diaria(temporada_atual="2026-27"):
     limpar_dados_temporada_atual(temporada_atual)
     
     try:
-        # ATALHO DAS ESTATÍSTICAS TRADICIONAIS E 3 PONTOS (Regular Season)
         print("Baixando Estatísticas Tradicionais (Incluindo 3 Pontos)...")
         tipo = "Regular Season"
         df_trad = leaguedashplayerstats.LeagueDashPlayerStats(season=temporada_atual, season_type_all_star=tipo).get_data_frames()[0]
@@ -77,10 +104,10 @@ def executar_atualizacao_diaria(temporada_atual="2026-27"):
                     "time_abrev": row['TEAM_ABBREVIATION'],
                     "idade": int(row['AGE']),
                     "jogos_disputados": int(row['GP']),
+                    "minutos_totais": float(row['MIN']),
                     "pontos_totais": int(row['PTS']),
                     "assistencias_totais": int(row['AST']),
                     "rebotes_totais": int(row['REB']),
-                    # 👇 OS NOVOS CAMPOS AQUI 👇
                     "fg3m_totais": int(row['FG3M']),
                     "fg3a_totais": int(row['FG3A'])
                 })
@@ -88,10 +115,8 @@ def executar_atualizacao_diaria(temporada_atual="2026-27"):
         if lista_trad: enviar_estatisticas_para_banco(lista_trad)
         
         bruto_adv, _ = buscar_estatisticas_avancadas_liga(temporada_atual)
-        
         perfil_basico = criar_perfil_basico_liga(bruto_adv, temporada_atual)
-        if perfil_basico: 
-            enviar_para_banco(perfil_basico)
+        if perfil_basico: enviar_para_banco(perfil_basico)
 
         limpa_adv = limpar_estatisticas_avancadas(bruto_adv, temporada_atual)
         filtrada_adv = [s for s in limpa_adv if s["jogador_id"] in ids_jogadores]
@@ -115,10 +140,8 @@ def executar_atualizacao_diaria(temporada_atual="2026-27"):
             carregar_defesa_supabase(df_defesa, supabase)
             
         print("\n--- ATUALIZAÇÃO DIÁRIA CONCLUÍDA COM SUCESSO! ---")
-        
     except Exception as e:
         print(f"[ERRO FATAL NA ATUALIZAÇÃO DIÁRIA]: {e}")
-
 
 # =======================================================
 # ROTINA 2: CARGA HISTÓRICA COMPLETA
@@ -147,6 +170,7 @@ def executar_carga_historica(lista_temporadas):
                         "time_abrev": row['TEAM_ABBREVIATION'],
                         "idade": int(row['AGE']),
                         "jogos_disputados": int(row['GP']),
+                        "minutos_totais": float(row['MIN']), # 👇 Minutos inseridos aqui também
                         "pontos_totais": int(row['PTS']),
                         "assistencias_totais": int(row['AST']),
                         "rebotes_totais": int(row['REB']),
@@ -185,40 +209,8 @@ def executar_carga_historica(lista_temporadas):
         time.sleep(3)
     print("\n--- CARGA HISTÓRICA CONCLUÍDA COM SUCESSO! ---")
 
-
 # =======================================================
-# ROTINA 3: CARGAS EXCLUSIVAS (TIMES E DEFESA)
-# =======================================================
-def executar_carga_apenas_defesa(lista_temporadas):
-    print(f"--- INICIANDO CARGA EXCLUSIVA DE DEFESA ({len(lista_temporadas)} temporadas) ---")
-    ids_jogadores = obter_ids_jogadores_ativos()
-    for temporada in lista_temporadas:
-        try:
-            df_defesa = extrair_dados_defesa(temporada)
-            if not df_defesa.empty:
-                df_defesa = df_defesa[df_defesa['PLAYER_ID'].isin(ids_jogadores)]
-                carregar_defesa_supabase(df_defesa, supabase)
-        except Exception as e:
-            print(f"[ERRO NA TEMPORADA {temporada}]: {e}")
-        time.sleep(3)
-
-def executar_carga_apenas_times(lista_temporadas):
-    print(f"--- INICIANDO CARGA EXCLUSIVA DE TIMES ({len(lista_temporadas)} temporadas) ---")
-    for temporada in lista_temporadas:
-        print(f"\n PUXANDO TIMES: {temporada}")
-        try:
-            df_times = extrair_dados_times(temporada)
-            if not df_times.empty:
-                carregar_times_supabase(df_times, supabase)
-            else:
-                print("Nenhum dado de time retornado.")
-        except Exception as e:
-            print(f"[ERRO NA TEMPORADA {temporada}]: {e}")
-        time.sleep(3)
-    print("\n--- CARGA DE TIMES CONCLUÍDA COM SUCESSO! ---")
-
-# =======================================================
-# ROTINA 4: BACKFILL DE PLAYOFFS
+# ROTINA 3: BACKFILL DE PLAYOFFS
 # =======================================================
 def executar_backfill_playoffs(lista_temporadas):
     print(f"--- INICIANDO DOWNLOAD COMPLETO DE PLAYOFFS ---")
@@ -254,23 +246,61 @@ def executar_backfill_playoffs(lista_temporadas):
                     "time_abrev": row['TEAM_ABBREVIATION'],
                     "idade": int(row['AGE']),
                     "jogos_disputados": int(row['GP']),
+                    "minutos_totais": float(row['MIN']), # 👇 Minutos inseridos nos playoffs também
                     "pontos_totais": int(row['PTS']),
                     "assistencias_totais": int(row['AST']),
                     "rebotes_totais": int(row['REB']),
-                    # 👇 OS NOVOS CAMPOS DOS PLAYOFFS 👇
                     "fg3m_totais": int(row['FG3M']),
                     "fg3a_totais": int(row['FG3A'])
                 })
             
             if lista_trad:
-                # O Upsert substitui quem já existe, assim não gera erro
                 enviar_estatisticas_para_banco(lista_trad)
-                print(f"Tradicionais: Atualizados com 3 Pontos.")
+                print(f"Tradicionais: Atualizados com 3 Pontos e Minutos.")
         except Exception as e:
             print(f"Erro Tradicionais: {e}")
             
         time.sleep(3)
+        
+# =======================================================
+# ROTINA 4: ATUALIZAÇÃO DE ELENCOS OFICIAIS (ROSTER)
+# =======================================================
+def atualizar_elencos_oficiais(temporada="2026-27"):
+    print(f"--- BASTIDORES: BUSCANDO ELENCOS OFICIAIS DA TEMPORADA {temporada} ---")
+    nba_teams = teams.get_teams()
+    atualizacoes_cadastrais = []
+    
+    for team in nba_teams:
+        team_id = team['id']
+        nome_time = team['full_name']
+        print(f"Puxando elenco: {nome_time}...")
+        try:
+            roster = commonteamroster.CommonTeamRoster(team_id=team_id, season=temporada).get_data_frames()[0]
+            for _, row in roster.iterrows():
+                atualizacoes_cadastrais.append({
+                    "id": int(row['PLAYER_ID']),
+                    "time_atual_id": int(team_id)
+                })
+            time.sleep(0.6)
+        except Exception as e:
+            print(f"Erro ao buscar elenco do {nome_time}: {e}")
+            
+    if atualizacoes_cadastrais:
+        print(f"\nSalvando {len(atualizacoes_cadastrais)} jogadores em suas respectivas franquias...")
+        for lote in dividir_em_lotes(atualizacoes_cadastrais, 100):
+            supabase.table("jogadores").upsert(lote).execute()
+        print("✅ ELENCOS ATUALIZADOS COM SUCESSO ABSOLUTO!")
 
 if __name__ == "__main__":
-    # Deixei a atualização diária pronta para rodar
+    # =========================================================================
+    # PAINEL DE CONTROLE - DESCOMENTE A ROTINA QUE VOCÊ QUER RODAR HOJE
+    # =========================================================================
+    
+    # 1. PARA PUXAR KOBE, BIRD E A HISTÓRIA (Rode apenas 1 vez)
+    #carregar_jogadores_historicos_banco()
+    
+    # 2. PARA ATUALIZAR O ELENCO DAS EQUIPES
+    #atualizar_elencos_oficiais("2026-27")
+    
+    # 3. ATUALIZAÇÃO DIÁRIA NORMAL
     executar_atualizacao_diaria("2026-27")

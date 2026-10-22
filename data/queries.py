@@ -484,3 +484,52 @@ def obter_hot_streaks_liga(temporada="2026-27"):
     except Exception as e:
         print(f"Erro ao buscar Hot Streaks: {e}")
         return pd.DataFrame()
+    
+@st.cache_data(ttl=300)
+def obter_evolucao_snapshot_10dias(temporada="2026-27"):
+    """Compara os dados mais recentes com o snapshot mais antigo ou anterior para isolar o bloco de 10 dias."""
+    try:
+        # Busca todos os snapshots ordenados por data
+        resp = supabase.table("stats_snapshots_10dias")\
+            .select("*")\
+            .eq("temporada", temporada)\
+            .order("data_snapshot", desc=False)\
+            .execute()
+            
+        if not resp.data:
+            return pd.DataFrame()
+            
+        df = pd.DataFrame(resp.data)
+        
+        # Pega as datas únicas disponíveis no banco
+        datas_disponiveis = sorted(df['data_snapshot'].unique())
+        
+        if len(datas_disponiveis) < 2:
+            # Se só tiver 1 snapshot tirado até agora, retorna ele próprio como base
+            return df[df['data_snapshot'] == datas_disponiveis[0]].copy()
+            
+        # Pega o penúltimo e o último snapshot para calcular o delta exato do último ciclo
+        data_anterior = datas_disponiveis[-2]
+        data_recente = datas_disponiveis[-1]
+        
+        df_ant = df[df['data_snapshot'] == data_anterior].set_index('jogador_id')
+        df_rec = df[df['data_snapshot'] == data_recente].set_index('jogador_id')
+        
+        # Faz o "Delta" (Recente - Anterior) para isolar o que o jogador produziu estritamente nesses 10 dias
+        df_delta = df_rec.copy()
+        comuns = df_rec.index.intersection(df_ant.index)
+        
+        df_delta.loc[comuns, 'jogos_10d'] = df_rec.loc[comuns, 'jogos_disputados'] - df_ant.loc[comuns, 'jogos_disputados']
+        df_delta.loc[comuns, 'pts_10d'] = df_rec.loc[comuns, 'pontos_totais'] - df_ant.loc[comuns, 'pontos_totais']
+        df_delta.loc[comuns, 'ast_10d'] = df_rec.loc[comuns, 'assistencias_totais'] - df_ant.loc[comuns, 'assistencias_totais']
+        df_delta.loc[comuns, 'reb_10d'] = df_rec.loc[comuns, 'rebotes_totais'] - df_ant.loc[comuns, 'rebotes_totais']
+        
+        # Média por jogo estritamente nesse ciclo de 10 dias
+        df_delta['PPG_10D'] = (df_delta['pts_10d'] / df_delta['jogos_10d'].replace(0, 1)).round(1)
+        df_delta['APG_10D'] = (df_delta['ast_10d'] / df_delta['jogos_10d'].replace(0, 1)).round(1)
+        df_delta['RPG_10D'] = (df_delta['reb_10d'] / df_delta['jogos_10d'].replace(0, 1)).round(1)
+        
+        return df_delta.reset_index(), data_anterior, data_recente
+    except Exception as e:
+        print(f"Erro ao calcular evolução de snapshots: {e}")
+        return pd.DataFrame(), None, None

@@ -8,6 +8,7 @@ from nba_api.stats.endpoints import leaguedashplayerstats
 from nba_api.stats.endpoints import commonallplayers
 from nba_api.stats.endpoints import commonteamroster
 from nba_api.stats.static import teams
+from datetime import datetime, timedelta
 
 # Carrega as senhas do arquivo .env ANTES de importar o banco
 load_dotenv()
@@ -43,7 +44,8 @@ from carregador import (
     limpar_dados_temporada_atual,
     dividir_em_lotes,
     supabase,
-    enviar_stats_momento
+    enviar_stats_momento,
+    enviar_snapshots_10dias
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
@@ -115,6 +117,7 @@ def executar_atualizacao_diaria(temporada_atual="2026-27"):
         
         if lista_trad: enviar_estatisticas_para_banco(lista_trad)
         
+        verificar_e_salvar_snapshot_10dias(temporada_atual, df_trad, ids_jogadores)
         bruto_adv, _ = buscar_estatisticas_avancadas_liga(temporada_atual)
         perfil_basico = criar_perfil_basico_liga(bruto_adv, temporada_atual)
         if perfil_basico: enviar_para_banco(perfil_basico)
@@ -300,6 +303,56 @@ def atualizar_elencos_oficiais(temporada="2026-27"):
         for lote in dividir_em_lotes(atualizacoes_cadastrais, 100):
             supabase.table("jogadores").upsert(lote).execute()
         print("✅ ELENCOS ATUALIZADOS COM SUCESSO ABSOLUTO!")
+
+def verificar_e_salvar_snapshot_10dias(temporada_atual, df_trad_atual, ids_jogadores):
+    """Verifica se o último snapshot tem 10 dias ou mais. Se sim, tira uma nova foto acumulada."""
+    hoje = datetime.now().date()
+    
+    # 1. Consulta o banco para ver qual foi a data do último snapshot desta temporada
+    try:
+        resp = supabase.table("stats_snapshots_10dias")\
+            .select("data_snapshot")\
+            .eq("temporada", temporada_atual)\
+            .order("data_snapshot", desc=True)\
+            .limit(1)\
+            .execute()
+            
+        ultimo_snapshot_str = resp.data[0]['data_snapshot'] if resp.data else None
+    except Exception:
+        ultimo_snapshot_str = None
+        
+    deve_salvar = False
+    if not ultimo_snapshot_str:
+        print("📸 Nenhum snapshot anterior encontrado. Criando o primeiro snapshot da temporada!")
+        deve_salvar = True
+    else:
+        ultima_data = datetime.strptime(ultimo_snapshot_str, "%Y-%m-%d").date()
+        dias_decorridos = (hoje - ultima_data).days
+        print(f"Dias desde o último snapshot de 10 dias: {dias_decorridos} dias.")
+        if dias_decorridos >= 10:
+            print(f"⏱️ O ciclo de 10 dias foi atingido ({dias_decorridos} dias). Tirando novo snapshot...")
+            deve_salvar = True
+            
+    if deve_salvar:
+        data_hoje_str = hoje.strftime("%Y-%m-%d")
+        lista_snapshots = []
+        for _, row in df_trad_atual.iterrows():
+            if row['PLAYER_ID'] in ids_jogadores:
+                lista_snapshots.append({
+                    "jogador_id": int(row['PLAYER_ID']),
+                    "temporada": temporada_atual,
+                    "data_snapshot": data_hoje_str,
+                    "time_abrev": row['TEAM_ABBREVIATION'],
+                    "jogos_disputados": int(row['GP']),
+                    "minutos_totais": float(row['MIN']),
+                    "pontos_totais": int(row['PTS']),
+                    "assistencias_totais": int(row['AST']),
+                    "rebotes_totais": int(row['REB']),
+                    "fg3m_totais": int(row['FG3M']),
+                    "fg3a_totais": int(row['FG3A'])
+                })
+        if lista_snapshots:
+            enviar_snapshots_10dias(lista_snapshots)
 
 if __name__ == "__main__":
     # =========================================================================

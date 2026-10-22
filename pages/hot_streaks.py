@@ -121,3 +121,31 @@ with aba_clutch:
         )
     else:
         st.info("Ainda não há registros de Clutch Time salvos para 2026-27.")
+
+# ==========================================
+# NOVA ABA: EVOLUÇÃO DE 10 DIAS (SNAPSHOTS)
+# ==========================================
+# Adicione esta aba na lista de abas lá no hot_streaks.py:
+# aba_ataque, aba_defesa, aba_impacto, aba_clutch, aba_evolucao = st.tabs([...])
+
+with aba_evolucao:
+    st.markdown("##### 📈 Evolução de Desempenho (Comparativo entre Ciclos de 10 Dias)")
+    st.caption("Isola o rendimento exato do jogador no último bloco de 10 dias comparado ao ciclo anterior.")
+    
+    from data.queries import obter_evolucao_snapshot_10dias
+    df_evol, data_ant, data_rec = obter_evolucao_snapshot_10dias(TEMPORADA_ATUAL)
+    
+    if not df_evol.empty and data_ant and data_rec:
+        st.info(f"📅 Comparando o bloco de {data_ant} até {data_rec}")
+        
+        # Filtro rápido por jogador para analisar a evolução individual
+        jogadores_disp = df_evol['jogador_id'].tolist() # (O ideal aqui é juntar com o nome do jogador da tabela jogadores)
+        
+        # Exibe o ranking de quem mais pontuou estritamente nesse último bloco de 10 dias
+        if 'PPG_10D' in df_evol.columns:
+            df_top_10d = df_evol.sort_values(by="PPG_10D", ascending=False).head(20)
+            
+            # Gráfico de barras simples no Streamlit com os maiores pontuadores do período
+            st.bar_chart(df_top_10d.set_index('time_abrev')['PPG_10D'])
+    else:
+        st.warning("⚠️ Ainda aguardando o acúmulo de pelo menos 2 snapshots (intervalo de 10 dias) para gerar o comparativo visual.")

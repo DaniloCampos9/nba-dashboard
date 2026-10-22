@@ -71,3 +71,13 @@ def enviar_stats_momento(lista_stats):
     for lote in dividir_em_lotes(lista_stats, 100):
         supabase.table("stats_momento").upsert(lote, on_conflict="jogador_id, temporada").execute()
     print("Sucesso! Momento carregado.")
+    
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def enviar_snapshots_10dias(lista_snapshots):
+    if not lista_snapshots: return
+    print(f"Enviando {len(lista_snapshots)} snapshots de 10 dias em lotes de 100...")
+    for lote in dividir_em_lotes(lista_snapshots, 100):
+        supabase.table("stats_snapshots_10dias").upsert(
+            lote, on_conflict="jogador_id, temporada, data_snapshot"
+        ).execute()
+    print("Sucesso! Snapshots salvos.")

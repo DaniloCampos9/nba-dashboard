@@ -50,14 +50,24 @@ def enviar_stats_clutch(lista_stats):
     if not lista_stats: return
     print(f"Enviando {len(lista_stats)} stats clutch em lotes de 100...")
     for lote in dividir_em_lotes(lista_stats, 100):
-        supabase.table("stats_clutch").upsert(lote).execute()
+        supabase.table("stats_clutch").upsert(lote, on_conflict="jogador_id, temporada, tipo_temporada").execute()
     print("Sucesso! Clutch carregado.")
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
 def limpar_dados_temporada_atual(temporada):
     """Apaga os dados da temporada atual para evitar duplicidade na carga diária otimizada."""
     print(f"Limpando registros antigos da temporada {temporada} no banco...")
+    supabase.table("estatisticas_temporada").delete().eq("temporada", temporada).execute()
     supabase.table("stats_avancadas").delete().eq("temporada", temporada).execute()
     supabase.table("stats_hustle").delete().eq("temporada", temporada).execute()
     supabase.table("stats_clutch").delete().eq("temporada", temporada).execute()
+    supabase.table("stats_momento").delete().eq("temporada", temporada).execute() # Nova linha
     print("Limpeza concluída! Banco pronto para os dados novos.")
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def enviar_stats_momento(lista_stats):
+    if not lista_stats: return
+    print(f"Enviando {len(lista_stats)} stats de momento (Hot Streaks) em lotes de 100...")
+    for lote in dividir_em_lotes(lista_stats, 100):
+        supabase.table("stats_momento").upsert(lote, on_conflict="jogador_id, temporada").execute()
+    print("Sucesso! Momento carregado.")

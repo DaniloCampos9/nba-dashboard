@@ -2,8 +2,8 @@ import time
 from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_fixed
 import pandas as pd
-from extrator import extrair_dados_defesa, extrair_dados_times
-from transformador import carregar_defesa_supabase, carregar_times_supabase
+from extrator import extrair_dados_defesa, extrair_dados_times, extrair_dados_momento
+from transformador import carregar_defesa_supabase, carregar_times_supabase, limpar_estatisticas_momento
 from nba_api.stats.endpoints import leaguedashplayerstats
 from nba_api.stats.endpoints import commonallplayers
 from nba_api.stats.endpoints import commonteamroster
@@ -42,7 +42,8 @@ from carregador import (
     enviar_stats_clutch,
     limpar_dados_temporada_atual,
     dividir_em_lotes,
-    supabase
+    supabase,
+    enviar_stats_momento
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
@@ -138,6 +139,15 @@ def executar_atualizacao_diaria(temporada_atual="2026-27"):
         if not df_defesa.empty:
             df_defesa = df_defesa[df_defesa['PLAYER_ID'].isin(ids_jogadores)]
             carregar_defesa_supabase(df_defesa, supabase)
+            
+        # 👇 AGORA ESTÁ FORA DO IF, RODANDO SEMPRE COM SEGURANÇA
+        print("Baixando dados de Momento (Hot Streaks)...")
+        df_momento = extrair_dados_momento(temporada_atual, n_jogos=5)
+        if not df_momento.empty:
+            lista_momento = limpar_estatisticas_momento(df_momento)
+            if lista_momento:
+                enviar_stats_momento(lista_momento)
+        # ========================================
             
         print("\n--- ATUALIZAÇÃO DIÁRIA CONCLUÍDA COM SUCESSO! ---")
     except Exception as e:

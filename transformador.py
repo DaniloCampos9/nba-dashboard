@@ -1,3 +1,5 @@
+import pandas as pd
+
 def converter_para_inteiro(valor):
     if valor is None: return None
     return int(float(valor))
@@ -162,3 +164,35 @@ def limpar_estatisticas_clutch(dados_brutos, temporada, tipo="Regular Season"):
             "clutch_usg_pct": jogador.get("USG_PCT")
         })
     return lista_clutch
+
+def limpar_estatisticas_momento(df_momento):
+    """Limpa e formata os dados de momento para envio ao Supabase."""
+    if df_momento.empty:
+        return []
+        
+    lista_momento = []
+    for _, row in df_momento.iterrows():
+        try:
+            lista_momento.append({
+                "jogador_id": int(row['PLAYER_ID']),
+                "temporada": str(row['temporada']),
+                "time_abrev": str(row['TEAM_ABBREVIATION']),
+                "gp": int(row['GP']),
+                "minutos": float(row['MIN']),
+                "pts": int(row['PTS']),
+                "reb": int(row['REB']),
+                "ast": int(row['AST']),
+                "stl": int(row['STL']),
+                "blk": int(row['BLK']),
+                "fg3m": int(row['FG3M']),
+                "fg3a": int(row['FG3A']),
+                "plus_minus": float(row['PLUS_MINUS']),
+                "ts_pct": float(row['TS_PCT']) if pd.notna(row['TS_PCT']) else 0.0,
+                "efg_pct": float(row['EFG_PCT']) if pd.notna(row['EFG_PCT']) else 0.0,
+                "usg_pct": float(row['USG_PCT']) if pd.notna(row['USG_PCT']) else 0.0,
+                "net_rating": float(row['NET_RATING']) if pd.notna(row['NET_RATING']) else 0.0,
+                "pie": float(row['PIE']) if pd.notna(row['PIE']) else 0.0
+            })
+        except Exception:
+            continue
+    return lista_momento

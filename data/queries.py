@@ -340,48 +340,69 @@ def obter_elenco_time(nome_time, temporada, tipo="Regular Season"):
         print(f"Erro obter_elenco_time: {e}")
         return pd.DataFrame()
     
-@st.cache_data(ttl=3600)
-def obter_momento_recente(nome_time, temporada):
-    """Busca os números dos últimos 10 jogos diretamente da NBA API, com segurança."""
-    from nba_api.stats.endpoints import leaguedashplayerstats
-    abrev = TEAM_MAPPING.get(nome_time)
-    
-    # Se a temporada for a atual (26-27) e ainda não tiver começado/não tiver 10 jogos, ou se o time não existir
-    if not abrev or temporada == "2026-27":
-        return None
-        
+@st.cache_data(ttl=300)
+def obter_hot_streaks_supabase(temporada="2026-27"):
+    """Busca os dados dos últimos 5 jogos no Supabase e cruza com a temporada atual e clutch."""
     try:
-        # Puxa a liga inteira nos últimos 10 jogos em 1 único request
-        resp = leaguedashplayerstats.LeagueDashPlayerStats(
-            season=temporada, 
-            last_n_games=10,
-            measure_type_detailed_defense="Base"
-        ).get_data_frames()[0]
+        resp_mom = supabase.table("stats_momento").select("*").eq("temporada", temporada).execute()
+        if not resp_mom.data:
+            return pd.DataFrame(), pd.DataFrame()
+            
+        df_mom = pd.DataFrame(resp_mom.data)
         
-        # Filtra apenas o time selecionado
-        df_time = resp[resp['TEAM_ABBREVIATION'] == abrev].copy()
-        if df_time.empty: return None
+        # Busca nomes dos jogadores
+        ids = df_mom['jogador_id'].tolist()
+        resp_jog = supabase.table("jogadores").select("id, nome_completo, posicao").in_("id", ids).execute()
+        df_jog = pd.DataFrame(resp_jog.data) if resp_jog.data else pd.DataFrame()
         
-        # Filtra quem jogou pelo menos 5 dos últimos 10 jogos para ser uma amostra válida
-        df_time = df_time[df_time['GP'] >= 5].copy()
-        if df_time.empty: return None
+        # Busca médias da temporada atual para calcular o Delta (Quem mais esquentou)
+        resp_temp = supabase.table("estatisticas_temporada").select("jogador_id, jogos_disputados, pontos_totais").eq("temporada", temporada).eq("tipo_temporada", "Regular Season").execute()
+        df_temp = pd.DataFrame(resp_temp.data) if resp_temp.data else pd.DataFrame()
         
-        # Calcula a média de pontos recente
-        df_time['PPG_RECENTE'] = df_time['PTS'] / df_time['GP']
-        
-        # Encontra o jogador com maior pontuação no recorte
-        destaque = df_time.sort_values(by="PPG_RECENTE", ascending=False).iloc[0]
-        
-        return {
-            "nome": destaque['PLAYER_NAME'],
-            "jogos": int(destaque['GP']),
-            "ppg": round(destaque['PPG_RECENTE'], 1),
-            "fg_pct": round(destaque['FG_PCT'] * 100, 1),
-            "plus_minus": round(destaque['PLUS_MINUS'] / destaque['GP'], 1) # Saldo de pontos do time com ele em quadra
-        }
-    except Exception as e:
-        return None # Se a API falhar ou não houver dados, retorna None para a página não quebrar
+        # Busca dados de Clutch da temporada atual no banco
+        resp_clutch = supabase.table("stats_clutch").select("*").eq("temporada", temporada).eq("tipo_temporada", "Regular Season").execute()
+        df_clutch = pd.DataFrame(resp_clutch.data) if resp_clutch.data else pd.DataFrame()
 
+        df = pd.merge(df_mom, df_jog, left_on="jogador_id", right_on="id", how="inner")
+        df = df[df['gp'] > 0].copy()
+        
+        # Médias por jogo na janela recente (Sem filtro mínimo de jogos!)
+        df['PPG'] = (df['pts'] / df['gp']).round(1)
+        df['RPG'] = (df['reb'] / df['gp']).round(1)
+        df['APG'] = (df['ast'] / df['gp']).round(1)
+        df['SPG'] = (df['stl'] / df['gp']).round(1)
+        df['BPG'] = (df['blk'] / df['gp']).round(1)
+        df['STOCKS'] = (df['SPG'] + df['BPG']).round(1)
+        df['MPG'] = (df['minutos'] / df['gp']).round(1)
+        df['3PM'] = (df['fg3m'] / df['gp']).round(1)
+        df['3P%'] = ((df['fg3m'] / df['fg3a'].replace(0, pd.NA)) * 100).fillna(0.0).round(1)
+        df['PLUS_MINUS_PG'] = (df['plus_minus'] / df['gp']).round(1)
+        
+        df['TS%'] = (df['ts_pct'] * 100).round(1)
+        df['USG%'] = (df['usg_pct'] * 100).round(1)
+        df['PIE%'] = (df['pie'] * 100).round(1)
+        
+        # Cálculo do Delta de Temperatura (PPG últimos 5 jogos vs PPG Temporada)
+        if not df_temp.empty:
+            df_temp = df_temp[df_temp['jogos_disputados'] > 0].copy()
+            df_temp['PPG_SEASON'] = (df_temp['pontos_totais'] / df_temp['jogos_disputados']).round(1)
+            df = pd.merge(df, df_temp[['jogador_id', 'PPG_SEASON']], on="jogador_id", how="left")
+            df['DELTA_PPG'] = (df['PPG'] - df['PPG_SEASON'].fillna(df['PPG'])).round(1)
+        else:
+            df['PPG_SEASON'] = df['PPG']
+            df['DELTA_PPG'] = 0.0
+
+        # Prepara DataFrame de Clutch com nomes
+        if not df_clutch.empty and not df_jog.empty:
+            df_clutch = pd.merge(df_clutch, df_jog, left_on="jogador_id", right_on="id", how="inner")
+            df_clutch['CLUTCH_FG%'] = (df_clutch['clutch_fg_pct'].fillna(0) * 100).round(1)
+            df_clutch['CLUTCH_3P%'] = (df_clutch['clutch_3p_pct'].fillna(0) * 100).round(1)
+            df_clutch['CLUTCH_USG%'] = (df_clutch['clutch_usg_pct'].fillna(0) * 100).round(1)
+
+        return df, df_clutch
+    except Exception as e:
+        print(f"Erro ao buscar Hot Streaks no Supabase: {e}")
+        return pd.DataFrame(), pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def obter_benchmarking_jogador(jogador_id, temporada, tipo="Regular Season"):
@@ -424,3 +445,42 @@ def obter_benchmarking_jogador(jogador_id, temporada, tipo="Regular Season"):
             "is_pct": is_pct
         }
     return benchmarks
+
+@st.cache_data(ttl=3600)
+def obter_hot_streaks_liga(temporada="2026-27"):
+    """Busca o desempenho da liga inteira nos últimos 10 jogos (Base e Avançado)."""
+    from nba_api.stats.endpoints import leaguedashplayerstats
+    import pandas as pd
+    
+    try:
+        # Puxa estatísticas tradicionais (Pontos, Roubos, Tocos)
+        df_base = leaguedashplayerstats.LeagueDashPlayerStats(
+            season=temporada, last_n_games=10, measure_type_detailed_defense="Base"
+        ).get_data_frames()[0]
+        
+        # Puxa estatísticas avançadas (TS%, Net Rating, PIE)
+        df_adv = leaguedashplayerstats.LeagueDashPlayerStats(
+            season=temporada, last_n_games=10, measure_type_detailed_defense="Advanced"
+        ).get_data_frames()[0]
+        
+        if df_base.empty or df_adv.empty: return pd.DataFrame()
+        
+        # Junta tudo usando o ID do jogador
+        df_completo = pd.merge(
+            df_base[['PLAYER_ID', 'PLAYER_NAME', 'TEAM_ABBREVIATION', 'GP', 'MIN', 'PTS', 'STL', 'BLK']], 
+            df_adv[['PLAYER_ID', 'TS_PCT', 'USG_PCT', 'NET_RATING', 'PIE']], 
+            on='PLAYER_ID'
+        )
+        
+        # Filtro de relevância: Apenas quem jogou pelo menos 5 dos últimos 10 jogos e mais de 15 min/jogo
+        df_valido = df_completo[(df_completo['GP'] >= 5) & (df_completo['MIN'] >= 15)].copy()
+        
+        # Normaliza para médias por jogo
+        df_valido['PPG'] = df_valido['PTS'] / df_valido['GP']
+        df_valido['SPG'] = df_valido['STL'] / df_valido['GP']
+        df_valido['BPG'] = df_valido['BLK'] / df_valido['GP']
+        
+        return df_valido
+    except Exception as e:
+        print(f"Erro ao buscar Hot Streaks: {e}")
+        return pd.DataFrame()

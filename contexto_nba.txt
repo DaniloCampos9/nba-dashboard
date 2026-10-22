@@ -1555,15 +1555,26 @@ from data.db import supabase
 @st.cache_data(ttl=86400) 
 def obter_lista_jogadores():
     try:
-        # Pede APENAS a coluna do nome para trafegar o mínimo de KB possível na rede
-        resp = supabase.table("jogadores").select("nome_completo").execute()
+        nomes = set()
+        inicio = 0
+        tamanho_pagina = 1000
         
-        if resp.data:
-            # Puxa os nomes, garante que não há duplicados com set(), e ordena de A a Z
-            nomes = [row['nome_completo'] for row in resp.data if row.get('nome_completo')]
-            return sorted(list(set(nomes)))
-        
-        return []
+        while True:
+            resp = supabase.table("jogadores").select("nome_completo").range(inicio, inicio + tamanho_pagina - 1).execute()
+            
+            if not resp.data:
+                break
+                
+            for row in resp.data:
+                if row.get('nome_completo'):
+                    nomes.add(row['nome_completo'])
+            
+            if len(resp.data) < tamanho_pagina:
+                break
+                
+            inicio += tamanho_pagina
+            
+        return sorted(list(nomes))
     except Exception as e:
         print(f"Erro ao carregar lista de jogadores: {e}")
         return []
@@ -1962,6 +1973,45 @@ def obter_benchmarking_jogador(jogador_id, temporada, tipo="Regular Season"):
             "is_pct": is_pct
         }
     return benchmarks
+
+@st.cache_data(ttl=3600)
+def obter_hot_streaks_liga(temporada="2026-27"):
+    """Busca o desempenho da liga inteira nos últimos 10 jogos (Base e Avançado)."""
+    from nba_api.stats.endpoints import leaguedashplayerstats
+    import pandas as pd
+    
+    try:
+        # Puxa estatísticas tradicionais (Pontos, Roubos, Tocos)
+        df_base = leaguedashplayerstats.LeagueDashPlayerStats(
+            season=temporada, last_n_games=10, measure_type_detailed_defense="Base"
+        ).get_data_frames()[0]
+        
+        # Puxa estatísticas avançadas (TS%, Net Rating, PIE)
+        df_adv = leaguedashplayerstats.LeagueDashPlayerStats(
+            season=temporada, last_n_games=10, measure_type_detailed_defense="Advanced"
+        ).get_data_frames()[0]
+        
+        if df_base.empty or df_adv.empty: return pd.DataFrame()
+        
+        # Junta tudo usando o ID do jogador
+        df_completo = pd.merge(
+            df_base[['PLAYER_ID', 'PLAYER_NAME', 'TEAM_ABBREVIATION', 'GP', 'MIN', 'PTS', 'STL', 'BLK']], 
+            df_adv[['PLAYER_ID', 'TS_PCT', 'USG_PCT', 'NET_RATING', 'PIE']], 
+            on='PLAYER_ID'
+        )
+        
+        # Filtro de relevância: Apenas quem jogou pelo menos 5 dos últimos 10 jogos e mais de 15 min/jogo
+        df_valido = df_completo[(df_completo['GP'] >= 5) & (df_completo['MIN'] >= 15)].copy()
+        
+        # Normaliza para médias por jogo
+        df_valido['PPG'] = df_valido['PTS'] / df_valido['GP']
+        df_valido['SPG'] = df_valido['STL'] / df_valido['GP']
+        df_valido['BPG'] = df_valido['BLK'] / df_valido['GP']
+        
+        return df_valido
+    except Exception as e:
+        print(f"Erro ao buscar Hot Streaks: {e}")
+        return pd.DataFrame()
 
 ================================================================================
 ARQUIVO: .\pages\0_home.py
@@ -2668,6 +2718,75 @@ with aba_perimetro:
         - **3&D Specialist:** Alas que não precisam da bola nas mãos (Baixo USG%), focados em converter tiros de 3 pontos em transição enquanto defendem o melhor jogador adversário.
         - **Franchise Cornerstone:** A âncora da equipa. Jogadores com altíssimo Volume de Uso (USG% > 28) e grande impacto estatístico global (PIE).
         """)
+
+================================================================================
+ARQUIVO: .\pages\hot_streaks.py
+================================================================================
+
+import streamlit as st
+import pandas as pd
+from components.navigation import renderizar_menu_superior
+from data.queries import obter_hot_streaks_liga
+
+renderizar_menu_superior()
+
+st.title("🔥 Radar de Tendências (Hot Streaks)")
+st.caption("Análise de Momento: O desempenho dos jogadores nos **últimos 10 jogos** disputados pelo seu time.")
+
+temporada_atual = st.session_state.get('filtro_temporada', '2026-27')
+
+with st.spinner("Buscando dados em tempo real da NBA..."):
+    df_trends = obter_hot_streaks_liga(temporada_atual)
+
+if df_trends.empty:
+    st.warning("Não foi possível carregar as tendências recentes. Verifique se a temporada já começou ou se há jogos suficientes.")
+    st.stop()
+
+# Configuração visual das tabelas
+config_colunas = {
+    "PLAYER_NAME": st.column_config.TextColumn("Atleta", width="medium"),
+    "TEAM_ABBREVIATION": st.column_config.TextColumn("Time"),
+    "PPG": st.column_config.NumberColumn("PTS", format="%.1f"),
+    "TS_PCT": st.column_config.ProgressColumn("Eficiência (TS%)", format="%.1f%%", min_value=40, max_value=75),
+    "SPG": st.column_config.NumberColumn("Roubos", format="%.1f"),
+    "BPG": st.column_config.NumberColumn("Tocos", format="%.1f"),
+    "NET_RATING": st.column_config.NumberColumn("Net Rtg", format="%.1f"),
+    "PIE": st.column_config.ProgressColumn("Impacto (PIE)", format="%.1f%%", min_value=0, max_value=25)
+}
+
+aba_ataque, aba_defesa, aba_geral = st.tabs(["🎯 Melhores Ataques", "🛡️ Melhores Defensores", "⚡ Destaques Gerais"])
+
+with aba_ataque:
+    st.subheader("Motores Ofensivos em Alta")
+    st.markdown("Jogadores com a maior média de pontos (PPG) aliada à eficiência real de arremesso (TS%).")
+    # Multiplica por 100 para ficar no formato de % no gráfico
+    df_ataque = df_trends.copy()
+    df_ataque['TS_PCT'] = df_ataque['TS_PCT'] * 100 
+    
+    top_ataques = df_ataque.sort_values(by="PPG", ascending=False).head(15)
+    st.dataframe(top_ataques[['PLAYER_NAME', 'TEAM_ABBREVIATION', 'PPG', 'TS_PCT', 'NET_RATING']], 
+                 column_config=config_colunas, hide_index=True, use_container_width=True)
+
+with aba_defesa:
+    st.subheader("Muralhas Recentes")
+    st.markdown("Especialistas defensivos que estão dominando em roubos e tocos nos últimos jogos.")
+    
+    # Soma roubos e tocos para achar os mais ativos na defesa
+    df_trends['STOCKS'] = df_trends['SPG'] + df_trends['BPG']
+    top_defesas = df_trends.sort_values(by="STOCKS", ascending=False).head(15)
+    st.dataframe(top_defesas[['PLAYER_NAME', 'TEAM_ABBREVIATION', 'SPG', 'BPG', 'NET_RATING']], 
+                 column_config=config_colunas, hide_index=True, use_container_width=True)
+
+with aba_geral:
+    st.subheader("Jogadores de Maior Impacto Global")
+    st.markdown("Os 'Unicórnios' do momento: a métrica PIE (Player Impact Estimate) mostra quem mais domina todas as facetas do jogo.")
+    
+    df_geral = df_trends.copy()
+    df_geral['PIE'] = df_geral['PIE'] * 100
+    
+    top_gerais = df_geral.sort_values(by="PIE", ascending=False).head(15)
+    st.dataframe(top_gerais[['PLAYER_NAME', 'TEAM_ABBREVIATION', 'PIE', 'PPG', 'NET_RATING']], 
+                 column_config=config_colunas, hide_index=True, use_container_width=True)
 
 ================================================================================
 ARQUIVO: .\utils\archetypes.py

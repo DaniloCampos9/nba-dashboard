@@ -61,3 +61,32 @@ def extrair_dados_times(temporada_nba, tipo="Regular Season"):
     except Exception as e:
         print(f"Erro na extração de times: {e}")
         return pd.DataFrame()
+    
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def extrair_dados_momento(temporada_nba="2026-27", n_jogos=5):
+    """Extrai métricas gerais da temporada para a tabela de momento de forma segura."""
+    time.sleep(2.0)
+    
+    # Puxa os dados base de toda a liga
+    base_endpoint = leaguedashplayerstats.LeagueDashPlayerStats(
+        season=temporada_nba, season_type_all_star="Regular Season", measure_type_detailed_defense="Base", timeout=30
+    )
+    df_base = base_endpoint.get_data_frames()[0]
+    
+    time.sleep(2.0)
+    
+    # Puxa os dados avançados de toda a liga
+    adv_endpoint = leaguedashplayerstats.LeagueDashPlayerStats(
+        season=temporada_nba, season_type_all_star="Regular Season", measure_type_detailed_defense="Advanced", timeout=30
+    )
+    df_adv = adv_endpoint.get_data_frames()[0]
+    
+    if df_base.empty or df_adv.empty:
+        return pd.DataFrame()
+        
+    cols_base = ['PLAYER_ID', 'TEAM_ABBREVIATION', 'GP', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'FG3M', 'FG3A', 'PLUS_MINUS']
+    cols_adv = ['PLAYER_ID', 'TS_PCT', 'EFG_PCT', 'USG_PCT', 'NET_RATING', 'PIE']
+    
+    df_momento = pd.merge(df_base[cols_base], df_adv[cols_adv], on='PLAYER_ID', how='inner')
+    df_momento['temporada'] = temporada_nba
+    return df_momento

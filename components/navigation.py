@@ -27,12 +27,13 @@ def renderizar_menu_superior():
         </style>
     """, unsafe_allow_html=True)
 
-    cols = st.columns(5)
+    cols = st.columns(6)
     cols[0].page_link("pages/0_home.py", label="Início", icon="🏠")
     cols[1].page_link("pages/1_overview.py", label="Jogadores", icon="👤")
     cols[2].page_link("pages/6_teams.py", label="Franquias", icon="🏀")
     cols[3].page_link("pages/5_comparison.py", label="Comparação", icon="⚔️")
-    cols[4].page_link("pages/8_glossary.py", label="Dicionário", icon="📚")
+    cols[4].page_link("pages/hot_streaks.py", label="Hot Streaks", icon="🔥")
+    cols[5].page_link("pages/8_glossary.py", label="Dicionário", icon="📚")
     st.divider()
 
 def cascata_jogadores():

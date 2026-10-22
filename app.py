@@ -17,6 +17,7 @@ pages = {
         st.Page("pages/7_shot_chart.py", title="Shot Charts", icon="🗺️"),
         st.Page("pages/6_teams.py", title="Times", icon="🏀"),
         st.Page("pages/5_comparison.py", title="Comparação", icon="⚔️"),
+        st.Page("pages/hot_streaks.py", title="Hot Streaks", icon="🔥"), # Nova linha
         st.Page("pages/8_glossary.py", title="Dicionário", icon="📚")
     ]
 }

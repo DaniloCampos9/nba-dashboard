@@ -497,7 +497,7 @@ def obter_evolucao_snapshot_10dias(temporada="2026-27"):
             .execute()
             
         if not resp.data:
-            return pd.DataFrame()
+            return pd.DataFrame(), None, None
             
         df = pd.DataFrame(resp.data)
         
@@ -505,8 +505,7 @@ def obter_evolucao_snapshot_10dias(temporada="2026-27"):
         datas_disponiveis = sorted(df['data_snapshot'].unique())
         
         if len(datas_disponiveis) < 2:
-            # Se só tiver 1 snapshot tirado até agora, retorna ele próprio como base
-            return df[df['data_snapshot'] == datas_disponiveis[0]].copy()
+            return df[df['data_snapshot'] == datas_disponiveis[0]].copy(), datas_disponiveis[0], None
             
         # Pega o penúltimo e o último snapshot para calcular o delta exato do último ciclo
         data_anterior = datas_disponiveis[-2]

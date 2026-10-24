@@ -72,11 +72,12 @@ config_colunas = {
     "PIE%": st.column_config.ProgressColumn("Impacto (PIE)", format="%.1f%%", min_value=0, max_value=30)
 }
 
-aba_ataque, aba_defesa, aba_impacto, aba_clutch = st.tabs([
+aba_ataque, aba_defesa, aba_impacto, aba_clutch, aba_evolucao = st.tabs([
     "🎯 Explosão Ofensiva", 
     "🛡️ Muralhas Defensivas", 
     "⚡ Impacto & Plus/Minus",
-    "🧊 Sangue Frio (Clutch)"
+    "🧊 Sangue Frio (Clutch)",
+    "📈 Evolução (10 Dias)"
 ])
 
 with aba_ataque:

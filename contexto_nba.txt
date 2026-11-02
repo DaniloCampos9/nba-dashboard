@@ -22,6 +22,7 @@ pages = {
         st.Page("pages/7_shot_chart.py", title="Shot Charts", icon="🗺️"),
         st.Page("pages/6_teams.py", title="Times", icon="🏀"),
         st.Page("pages/5_comparison.py", title="Comparação", icon="⚔️"),
+        st.Page("pages/hot_streaks.py", title="Hot Streaks", icon="🔥"), # Nova linha
         st.Page("pages/8_glossary.py", title="Dicionário", icon="📚")
     ]
 }
@@ -310,17 +311,37 @@ def enviar_stats_clutch(lista_stats):
     if not lista_stats: return
     print(f"Enviando {len(lista_stats)} stats clutch em lotes de 100...")
     for lote in dividir_em_lotes(lista_stats, 100):
-        supabase.table("stats_clutch").upsert(lote).execute()
+        supabase.table("stats_clutch").upsert(lote, on_conflict="jogador_id, temporada, tipo_temporada").execute()
     print("Sucesso! Clutch carregado.")
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
 def limpar_dados_temporada_atual(temporada):
     """Apaga os dados da temporada atual para evitar duplicidade na carga diária otimizada."""
     print(f"Limpando registros antigos da temporada {temporada} no banco...")
+    supabase.table("estatisticas_temporada").delete().eq("temporada", temporada).execute()
     supabase.table("stats_avancadas").delete().eq("temporada", temporada).execute()
     supabase.table("stats_hustle").delete().eq("temporada", temporada).execute()
     supabase.table("stats_clutch").delete().eq("temporada", temporada).execute()
+    supabase.table("stats_momento").delete().eq("temporada", temporada).execute() # Nova linha
     print("Limpeza concluída! Banco pronto para os dados novos.")
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def enviar_stats_momento(lista_stats):
+    if not lista_stats: return
+    print(f"Enviando {len(lista_stats)} stats de momento (Hot Streaks) em lotes de 100...")
+    for lote in dividir_em_lotes(lista_stats, 100):
+        supabase.table("stats_momento").upsert(lote, on_conflict="jogador_id, temporada").execute()
+    print("Sucesso! Momento carregado.")
+    
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def enviar_snapshots_10dias(lista_snapshots):
+    if not lista_snapshots: return
+    print(f"Enviando {len(lista_snapshots)} snapshots de 10 dias em lotes de 100...")
+    for lote in dividir_em_lotes(lista_snapshots, 100):
+        supabase.table("stats_snapshots_10dias").upsert(
+            lote, on_conflict="jogador_id, temporada, data_snapshot"
+        ).execute()
+    print("Sucesso! Snapshots salvos.")
 
 ================================================================================
 ARQUIVO: .\extrator.py
@@ -389,6 +410,35 @@ def extrair_dados_times(temporada_nba, tipo="Regular Season"):
     except Exception as e:
         print(f"Erro na extração de times: {e}")
         return pd.DataFrame()
+    
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def extrair_dados_momento(temporada_nba="2026-27", n_jogos=5):
+    """Extrai métricas gerais da temporada para a tabela de momento de forma segura."""
+    time.sleep(2.0)
+    
+    # Puxa os dados base de toda a liga
+    base_endpoint = leaguedashplayerstats.LeagueDashPlayerStats(
+        season=temporada_nba, season_type_all_star="Regular Season", measure_type_detailed_defense="Base", timeout=30
+    )
+    df_base = base_endpoint.get_data_frames()[0]
+    
+    time.sleep(2.0)
+    
+    # Puxa os dados avançados de toda a liga
+    adv_endpoint = leaguedashplayerstats.LeagueDashPlayerStats(
+        season=temporada_nba, season_type_all_star="Regular Season", measure_type_detailed_defense="Advanced", timeout=30
+    )
+    df_adv = adv_endpoint.get_data_frames()[0]
+    
+    if df_base.empty or df_adv.empty:
+        return pd.DataFrame()
+        
+    cols_base = ['PLAYER_ID', 'TEAM_ABBREVIATION', 'GP', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'FG3M', 'FG3A', 'PLUS_MINUS']
+    cols_adv = ['PLAYER_ID', 'TS_PCT', 'EFG_PCT', 'USG_PCT', 'NET_RATING', 'PIE']
+    
+    df_momento = pd.merge(df_base[cols_base], df_adv[cols_adv], on='PLAYER_ID', how='inner')
+    df_momento['temporada'] = temporada_nba
+    return df_momento
 
 ================================================================================
 ARQUIVO: .\main.py
@@ -398,12 +448,13 @@ import time
 from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_fixed
 import pandas as pd
-from extrator import extrair_dados_defesa, extrair_dados_times
-from transformador import carregar_defesa_supabase, carregar_times_supabase
+from extrator import extrair_dados_defesa, extrair_dados_times, extrair_dados_momento
+from transformador import carregar_defesa_supabase, carregar_times_supabase, limpar_estatisticas_momento
 from nba_api.stats.endpoints import leaguedashplayerstats
 from nba_api.stats.endpoints import commonallplayers
 from nba_api.stats.endpoints import commonteamroster
 from nba_api.stats.static import teams
+from datetime import datetime, timedelta
 
 # Carrega as senhas do arquivo .env ANTES de importar o banco
 load_dotenv()
@@ -438,7 +489,9 @@ from carregador import (
     enviar_stats_clutch,
     limpar_dados_temporada_atual,
     dividir_em_lotes,
-    supabase
+    supabase,
+    enviar_stats_momento,
+    enviar_snapshots_10dias
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
@@ -510,6 +563,7 @@ def executar_atualizacao_diaria(temporada_atual="2026-27"):
         
         if lista_trad: enviar_estatisticas_para_banco(lista_trad)
         
+        verificar_e_salvar_snapshot_10dias(temporada_atual, df_trad, ids_jogadores)
         bruto_adv, _ = buscar_estatisticas_avancadas_liga(temporada_atual)
         perfil_basico = criar_perfil_basico_liga(bruto_adv, temporada_atual)
         if perfil_basico: enviar_para_banco(perfil_basico)
@@ -534,6 +588,15 @@ def executar_atualizacao_diaria(temporada_atual="2026-27"):
         if not df_defesa.empty:
             df_defesa = df_defesa[df_defesa['PLAYER_ID'].isin(ids_jogadores)]
             carregar_defesa_supabase(df_defesa, supabase)
+            
+        # 👇 AGORA ESTÁ FORA DO IF, RODANDO SEMPRE COM SEGURANÇA
+        print("Baixando dados de Momento (Hot Streaks)...")
+        df_momento = extrair_dados_momento(temporada_atual, n_jogos=5)
+        if not df_momento.empty:
+            lista_momento = limpar_estatisticas_momento(df_momento)
+            if lista_momento:
+                enviar_stats_momento(lista_momento)
+        # ========================================
             
         print("\n--- ATUALIZAÇÃO DIÁRIA CONCLUÍDA COM SUCESSO! ---")
     except Exception as e:
@@ -686,6 +749,56 @@ def atualizar_elencos_oficiais(temporada="2026-27"):
         for lote in dividir_em_lotes(atualizacoes_cadastrais, 100):
             supabase.table("jogadores").upsert(lote).execute()
         print("✅ ELENCOS ATUALIZADOS COM SUCESSO ABSOLUTO!")
+
+def verificar_e_salvar_snapshot_10dias(temporada_atual, df_trad_atual, ids_jogadores):
+    """Verifica se o último snapshot tem 10 dias ou mais. Se sim, tira uma nova foto acumulada."""
+    hoje = datetime.now().date()
+    
+    # 1. Consulta o banco para ver qual foi a data do último snapshot desta temporada
+    try:
+        resp = supabase.table("stats_snapshots_10dias")\
+            .select("data_snapshot")\
+            .eq("temporada", temporada_atual)\
+            .order("data_snapshot", desc=True)\
+            .limit(1)\
+            .execute()
+            
+        ultimo_snapshot_str = resp.data[0]['data_snapshot'] if resp.data else None
+    except Exception:
+        ultimo_snapshot_str = None
+        
+    deve_salvar = False
+    if not ultimo_snapshot_str:
+        print("📸 Nenhum snapshot anterior encontrado. Criando o primeiro snapshot da temporada!")
+        deve_salvar = True
+    else:
+        ultima_data = datetime.strptime(ultimo_snapshot_str, "%Y-%m-%d").date()
+        dias_decorridos = (hoje - ultima_data).days
+        print(f"Dias desde o último snapshot de 10 dias: {dias_decorridos} dias.")
+        if dias_decorridos >= 10:
+            print(f"⏱️ O ciclo de 10 dias foi atingido ({dias_decorridos} dias). Tirando novo snapshot...")
+            deve_salvar = True
+            
+    if deve_salvar:
+        data_hoje_str = hoje.strftime("%Y-%m-%d")
+        lista_snapshots = []
+        for _, row in df_trad_atual.iterrows():
+            if row['PLAYER_ID'] in ids_jogadores:
+                lista_snapshots.append({
+                    "jogador_id": int(row['PLAYER_ID']),
+                    "temporada": temporada_atual,
+                    "data_snapshot": data_hoje_str,
+                    "time_abrev": row['TEAM_ABBREVIATION'],
+                    "jogos_disputados": int(row['GP']),
+                    "minutos_totais": float(row['MIN']),
+                    "pontos_totais": int(row['PTS']),
+                    "assistencias_totais": int(row['AST']),
+                    "rebotes_totais": int(row['REB']),
+                    "fg3m_totais": int(row['FG3M']),
+                    "fg3a_totais": int(row['FG3A'])
+                })
+        if lista_snapshots:
+            enviar_snapshots_10dias(lista_snapshots)
 
 if __name__ == "__main__":
     # =========================================================================
@@ -965,8 +1078,29 @@ if __name__ == "__main__":
     executar_carga_otimizada()
 
 ================================================================================
+ARQUIVO: .\teste_momento.py
+================================================================================
+
+from extrator import buscar_estatisticas_clutch_liga
+from transformador import limpar_estatisticas_clutch
+from carregador import enviar_stats_clutch
+
+print("Baixando dados de Clutch da NBA (2026-27)...")
+bruto_clutch, temporada = buscar_estatisticas_clutch_liga("2026-27", "Regular Season")
+lista_clutch = limpar_estatisticas_clutch(bruto_clutch, temporada, "Regular Season")
+
+print(f"Itens de clutch obtidos: {len(lista_clutch)}")
+if lista_clutch:
+    enviar_stats_clutch(lista_clutch)
+    print("✅ Dados de Clutch enviados com sucesso para o Supabase!")
+else:
+    print("❌ Nenhum dado retornado.")
+
+================================================================================
 ARQUIVO: .\transformador.py
 ================================================================================
+
+import pandas as pd
 
 def converter_para_inteiro(valor):
     if valor is None: return None
@@ -1132,6 +1266,38 @@ def limpar_estatisticas_clutch(dados_brutos, temporada, tipo="Regular Season"):
             "clutch_usg_pct": jogador.get("USG_PCT")
         })
     return lista_clutch
+
+def limpar_estatisticas_momento(df_momento):
+    """Limpa e formata os dados de momento para envio ao Supabase."""
+    if df_momento.empty:
+        return []
+        
+    lista_momento = []
+    for _, row in df_momento.iterrows():
+        try:
+            lista_momento.append({
+                "jogador_id": int(row['PLAYER_ID']),
+                "temporada": str(row['temporada']),
+                "time_abrev": str(row['TEAM_ABBREVIATION']),
+                "gp": int(row['GP']),
+                "minutos": float(row['MIN']),
+                "pts": int(row['PTS']),
+                "reb": int(row['REB']),
+                "ast": int(row['AST']),
+                "stl": int(row['STL']),
+                "blk": int(row['BLK']),
+                "fg3m": int(row['FG3M']),
+                "fg3a": int(row['FG3A']),
+                "plus_minus": float(row['PLUS_MINUS']),
+                "ts_pct": float(row['TS_PCT']) if pd.notna(row['TS_PCT']) else 0.0,
+                "efg_pct": float(row['EFG_PCT']) if pd.notna(row['EFG_PCT']) else 0.0,
+                "usg_pct": float(row['USG_PCT']) if pd.notna(row['USG_PCT']) else 0.0,
+                "net_rating": float(row['NET_RATING']) if pd.notna(row['NET_RATING']) else 0.0,
+                "pie": float(row['PIE']) if pd.notna(row['PIE']) else 0.0
+            })
+        except Exception:
+            continue
+    return lista_momento
 
 ================================================================================
 ARQUIVO: .\components\charts.py
@@ -1421,12 +1587,13 @@ def renderizar_menu_superior():
         </style>
     """, unsafe_allow_html=True)
 
-    cols = st.columns(5)
+    cols = st.columns(6)
     cols[0].page_link("pages/0_home.py", label="Início", icon="🏠")
     cols[1].page_link("pages/1_overview.py", label="Jogadores", icon="👤")
     cols[2].page_link("pages/6_teams.py", label="Franquias", icon="🏀")
     cols[3].page_link("pages/5_comparison.py", label="Comparação", icon="⚔️")
-    cols[4].page_link("pages/8_glossary.py", label="Dicionário", icon="📚")
+    cols[4].page_link("pages/hot_streaks.py", label="Hot Streaks", icon="🔥")
+    cols[5].page_link("pages/8_glossary.py", label="Dicionário", icon="📚")
     st.divider()
 
 def cascata_jogadores():
@@ -1889,48 +2056,69 @@ def obter_elenco_time(nome_time, temporada, tipo="Regular Season"):
         print(f"Erro obter_elenco_time: {e}")
         return pd.DataFrame()
     
-@st.cache_data(ttl=3600)
-def obter_momento_recente(nome_time, temporada):
-    """Busca os números dos últimos 10 jogos diretamente da NBA API, com segurança."""
-    from nba_api.stats.endpoints import leaguedashplayerstats
-    abrev = TEAM_MAPPING.get(nome_time)
-    
-    # Se a temporada for a atual (26-27) e ainda não tiver começado/não tiver 10 jogos, ou se o time não existir
-    if not abrev or temporada == "2026-27":
-        return None
-        
+@st.cache_data(ttl=300)
+def obter_hot_streaks_supabase(temporada="2026-27"):
+    """Busca os dados dos últimos 5 jogos no Supabase e cruza com a temporada atual e clutch."""
     try:
-        # Puxa a liga inteira nos últimos 10 jogos em 1 único request
-        resp = leaguedashplayerstats.LeagueDashPlayerStats(
-            season=temporada, 
-            last_n_games=10,
-            measure_type_detailed_defense="Base"
-        ).get_data_frames()[0]
+        resp_mom = supabase.table("stats_momento").select("*").eq("temporada", temporada).execute()
+        if not resp_mom.data:
+            return pd.DataFrame(), pd.DataFrame()
+            
+        df_mom = pd.DataFrame(resp_mom.data)
         
-        # Filtra apenas o time selecionado
-        df_time = resp[resp['TEAM_ABBREVIATION'] == abrev].copy()
-        if df_time.empty: return None
+        # Busca nomes dos jogadores
+        ids = df_mom['jogador_id'].tolist()
+        resp_jog = supabase.table("jogadores").select("id, nome_completo, posicao").in_("id", ids).execute()
+        df_jog = pd.DataFrame(resp_jog.data) if resp_jog.data else pd.DataFrame()
         
-        # Filtra quem jogou pelo menos 5 dos últimos 10 jogos para ser uma amostra válida
-        df_time = df_time[df_time['GP'] >= 5].copy()
-        if df_time.empty: return None
+        # Busca médias da temporada atual para calcular o Delta (Quem mais esquentou)
+        resp_temp = supabase.table("estatisticas_temporada").select("jogador_id, jogos_disputados, pontos_totais").eq("temporada", temporada).eq("tipo_temporada", "Regular Season").execute()
+        df_temp = pd.DataFrame(resp_temp.data) if resp_temp.data else pd.DataFrame()
         
-        # Calcula a média de pontos recente
-        df_time['PPG_RECENTE'] = df_time['PTS'] / df_time['GP']
-        
-        # Encontra o jogador com maior pontuação no recorte
-        destaque = df_time.sort_values(by="PPG_RECENTE", ascending=False).iloc[0]
-        
-        return {
-            "nome": destaque['PLAYER_NAME'],
-            "jogos": int(destaque['GP']),
-            "ppg": round(destaque['PPG_RECENTE'], 1),
-            "fg_pct": round(destaque['FG_PCT'] * 100, 1),
-            "plus_minus": round(destaque['PLUS_MINUS'] / destaque['GP'], 1) # Saldo de pontos do time com ele em quadra
-        }
-    except Exception as e:
-        return None # Se a API falhar ou não houver dados, retorna None para a página não quebrar
+        # Busca dados de Clutch da temporada atual no banco
+        resp_clutch = supabase.table("stats_clutch").select("*").eq("temporada", temporada).eq("tipo_temporada", "Regular Season").execute()
+        df_clutch = pd.DataFrame(resp_clutch.data) if resp_clutch.data else pd.DataFrame()
 
+        df = pd.merge(df_mom, df_jog, left_on="jogador_id", right_on="id", how="inner")
+        df = df[df['gp'] > 0].copy()
+        
+        # Médias por jogo na janela recente (Sem filtro mínimo de jogos!)
+        df['PPG'] = (df['pts'] / df['gp']).round(1)
+        df['RPG'] = (df['reb'] / df['gp']).round(1)
+        df['APG'] = (df['ast'] / df['gp']).round(1)
+        df['SPG'] = (df['stl'] / df['gp']).round(1)
+        df['BPG'] = (df['blk'] / df['gp']).round(1)
+        df['STOCKS'] = (df['SPG'] + df['BPG']).round(1)
+        df['MPG'] = (df['minutos'] / df['gp']).round(1)
+        df['3PM'] = (df['fg3m'] / df['gp']).round(1)
+        df['3P%'] = ((df['fg3m'] / df['fg3a'].replace(0, pd.NA)) * 100).fillna(0.0).round(1)
+        df['PLUS_MINUS_PG'] = (df['plus_minus'] / df['gp']).round(1)
+        
+        df['TS%'] = (df['ts_pct'] * 100).round(1)
+        df['USG%'] = (df['usg_pct'] * 100).round(1)
+        df['PIE%'] = (df['pie'] * 100).round(1)
+        
+        # Cálculo do Delta de Temperatura (PPG últimos 5 jogos vs PPG Temporada)
+        if not df_temp.empty:
+            df_temp = df_temp[df_temp['jogos_disputados'] > 0].copy()
+            df_temp['PPG_SEASON'] = (df_temp['pontos_totais'] / df_temp['jogos_disputados']).round(1)
+            df = pd.merge(df, df_temp[['jogador_id', 'PPG_SEASON']], on="jogador_id", how="left")
+            df['DELTA_PPG'] = (df['PPG'] - df['PPG_SEASON'].fillna(df['PPG'])).round(1)
+        else:
+            df['PPG_SEASON'] = df['PPG']
+            df['DELTA_PPG'] = 0.0
+
+        # Prepara DataFrame de Clutch com nomes
+        if not df_clutch.empty and not df_jog.empty:
+            df_clutch = pd.merge(df_clutch, df_jog, left_on="jogador_id", right_on="id", how="inner")
+            df_clutch['CLUTCH_FG%'] = (df_clutch['clutch_fg_pct'].fillna(0) * 100).round(1)
+            df_clutch['CLUTCH_3P%'] = (df_clutch['clutch_3p_pct'].fillna(0) * 100).round(1)
+            df_clutch['CLUTCH_USG%'] = (df_clutch['clutch_usg_pct'].fillna(0) * 100).round(1)
+
+        return df, df_clutch
+    except Exception as e:
+        print(f"Erro ao buscar Hot Streaks no Supabase: {e}")
+        return pd.DataFrame(), pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def obter_benchmarking_jogador(jogador_id, temporada, tipo="Regular Season"):
@@ -2012,6 +2200,54 @@ def obter_hot_streaks_liga(temporada="2026-27"):
     except Exception as e:
         print(f"Erro ao buscar Hot Streaks: {e}")
         return pd.DataFrame()
+    
+@st.cache_data(ttl=300)
+def obter_evolucao_snapshot_10dias(temporada="2026-27"):
+    """Compara os dados mais recentes com o snapshot mais antigo ou anterior para isolar o bloco de 10 dias."""
+    try:
+        # Busca todos os snapshots ordenados por data
+        resp = supabase.table("stats_snapshots_10dias")\
+            .select("*")\
+            .eq("temporada", temporada)\
+            .order("data_snapshot", desc=False)\
+            .execute()
+            
+        if not resp.data:
+            return pd.DataFrame(), None, None
+            
+        df = pd.DataFrame(resp.data)
+        
+        # Pega as datas únicas disponíveis no banco
+        datas_disponiveis = sorted(df['data_snapshot'].unique())
+        
+        if len(datas_disponiveis) < 2:
+            return df[df['data_snapshot'] == datas_disponiveis[0]].copy(), datas_disponiveis[0], None
+            
+        # Pega o penúltimo e o último snapshot para calcular o delta exato do último ciclo
+        data_anterior = datas_disponiveis[-2]
+        data_recente = datas_disponiveis[-1]
+        
+        df_ant = df[df['data_snapshot'] == data_anterior].set_index('jogador_id')
+        df_rec = df[df['data_snapshot'] == data_recente].set_index('jogador_id')
+        
+        # Faz o "Delta" (Recente - Anterior) para isolar o que o jogador produziu estritamente nesses 10 dias
+        df_delta = df_rec.copy()
+        comuns = df_rec.index.intersection(df_ant.index)
+        
+        df_delta.loc[comuns, 'jogos_10d'] = df_rec.loc[comuns, 'jogos_disputados'] - df_ant.loc[comuns, 'jogos_disputados']
+        df_delta.loc[comuns, 'pts_10d'] = df_rec.loc[comuns, 'pontos_totais'] - df_ant.loc[comuns, 'pontos_totais']
+        df_delta.loc[comuns, 'ast_10d'] = df_rec.loc[comuns, 'assistencias_totais'] - df_ant.loc[comuns, 'assistencias_totais']
+        df_delta.loc[comuns, 'reb_10d'] = df_rec.loc[comuns, 'rebotes_totais'] - df_ant.loc[comuns, 'rebotes_totais']
+        
+        # Média por jogo estritamente nesse ciclo de 10 dias
+        df_delta['PPG_10D'] = (df_delta['pts_10d'] / df_delta['jogos_10d'].replace(0, 1)).round(1)
+        df_delta['APG_10D'] = (df_delta['ast_10d'] / df_delta['jogos_10d'].replace(0, 1)).round(1)
+        df_delta['RPG_10D'] = (df_delta['reb_10d'] / df_delta['jogos_10d'].replace(0, 1)).round(1)
+        
+        return df_delta.reset_index(), data_anterior, data_recente
+    except Exception as e:
+        print(f"Erro ao calcular evolução de snapshots: {e}")
+        return pd.DataFrame(), None, None
 
 ================================================================================
 ARQUIVO: .\pages\0_home.py
@@ -2726,67 +2962,155 @@ ARQUIVO: .\pages\hot_streaks.py
 import streamlit as st
 import pandas as pd
 from components.navigation import renderizar_menu_superior
-from data.queries import obter_hot_streaks_liga
+from data.queries import obter_hot_streaks_supabase
 
 renderizar_menu_superior()
 
-st.title("🔥 Radar de Tendências (Hot Streaks)")
-st.caption("Análise de Momento: O desempenho dos jogadores nos **últimos 10 jogos** disputados pelo seu time.")
+TEMPORADA_ATUAL = "2026-27"
 
-temporada_atual = st.session_state.get('filtro_temporada', '2026-27')
+st.title(f"🔥 Radar de Momento — Hot Streaks ({TEMPORADA_ATUAL})")
+st.caption("Recorte dinâmico dos **Últimos 5 Jogos** de cada equipe direto do banco de dados, sem trava de jogos mínimos.")
 
-with st.spinner("Buscando dados em tempo real da NBA..."):
-    df_trends = obter_hot_streaks_liga(temporada_atual)
+with st.spinner("Carregando termômetro da liga..."):
+    df_mom, df_clutch = obter_hot_streaks_supabase(TEMPORADA_ATUAL)
 
-if df_trends.empty:
-    st.warning("Não foi possível carregar as tendências recentes. Verifique se a temporada já começou ou se há jogos suficientes.")
+if df_mom.empty:
+    st.warning("Ainda não há dados de momento salvos para 2026-27. Rode o `python main.py` para alimentar a tabela `stats_momento`.")
     st.stop()
 
-# Configuração visual das tabelas
+# ==========================================
+# DESTAQUES DO MOMENTO (HERO CARDS)
+# ==========================================
+st.subheader("⚡ Os Caras do Momento (Últimos 5 Jogos)")
+c1, c2, c3, c4 = st.columns(4)
+
+top_scorer = df_mom.sort_values(by=["PPG", "TS%"], ascending=[False, False]).iloc[0]
+top_delta = df_mom.sort_values(by=["DELTA_PPG", "PPG"], ascending=[False, False]).iloc[0]
+top_def = df_mom.sort_values(by=["STOCKS", "BPG"], ascending=[False, False]).iloc[0]
+top_pie = df_mom.sort_values(by=["PIE%", "net_rating"], ascending=[False, False]).iloc[0]
+
+def render_card_destaque(col, titulo, icone, row, metrica_principal, sub_metrica, cor_borda):
+    with col:
+        st.markdown(f"""
+        <div style="background: rgba(255,255,255,0.04); border-top: 4px solid {cor_borda}; border-radius: 12px; padding: 14px; text-align: center; box-shadow: 0 4px 10px rgba(0,0,0,0.25);">
+            <div style="font-size: 0.8rem; color: #aaa; font-weight: bold; margin-bottom: 6px;">{icone} {titulo}</div>
+            <img src="https://cdn.nba.com/headshots/nba/latest/1040x760/{row['jogador_id']}.png" width="110" style="border-radius: 50%; background: rgba(255,255,255,0.05); margin-bottom: 8px;" />
+            <h4 style="margin: 4px 0 2px 0; font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{row['nome_completo']}</h4>
+            <span style="background: #222; color: #ccc; padding: 2px 8px; border-radius: 8px; font-size: 0.75rem;">{row['time_abrev']} • {int(row['gp'])} J</span>
+            <div style="color: {cor_borda}; font-size: 1.3rem; font-weight: 800; margin-top: 8px;">{metrica_principal}</div>
+            <div style="color: #888; font-size: 0.8rem;">{sub_metrica}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+render_card_destaque(c1, "Cestinha do Momento", "🎯", top_scorer, f"{top_scorer['PPG']:.1f} PPG", f"TS%: {top_scorer['TS%']:.1f}% | 3PM: {top_scorer['3PM']:.1f}", "#FF4B4B")
+render_card_destaque(c2, "Maior Salto (Esquentou)", "📈", top_delta, f"+{top_delta['DELTA_PPG']:.1f} PPG", f"Recente: {top_delta['PPG']:.1f} vs Temp: {top_delta['PPG_SEASON']:.1f}", "#FFA500")
+render_card_destaque(c3, "Xerife Defensivo", "🛡️", top_def, f"{top_def['STOCKS']:.1f} Stocks", f"{top_def['SPG']:.1f} STL + {top_def['BPG']:.1f} BLK", "#00C9FF")
+render_card_destaque(c4, "Dominância Global", "👑", top_pie, f"{top_pie['PIE%']:.1f}% PIE", f"Net Rtg: {top_pie['net_rating']:+.1f}", "#FFD700")
+
+st.divider()
+
+# ==========================================
+# TABELAS DETALHADAS POR CATEGORIA
+# ==========================================
 config_colunas = {
-    "PLAYER_NAME": st.column_config.TextColumn("Atleta", width="medium"),
-    "TEAM_ABBREVIATION": st.column_config.TextColumn("Time"),
-    "PPG": st.column_config.NumberColumn("PTS", format="%.1f"),
-    "TS_PCT": st.column_config.ProgressColumn("Eficiência (TS%)", format="%.1f%%", min_value=40, max_value=75),
-    "SPG": st.column_config.NumberColumn("Roubos", format="%.1f"),
-    "BPG": st.column_config.NumberColumn("Tocos", format="%.1f"),
-    "NET_RATING": st.column_config.NumberColumn("Net Rtg", format="%.1f"),
-    "PIE": st.column_config.ProgressColumn("Impacto (PIE)", format="%.1f%%", min_value=0, max_value=25)
+    "nome_completo": st.column_config.TextColumn("Atleta", width="medium"),
+    "time_abrev": st.column_config.TextColumn("Time", width="small"),
+    "gp": st.column_config.NumberColumn("Jogos (Janela)"),
+    "MPG": st.column_config.NumberColumn("MIN", format="%.1f"),
+    "PPG": st.column_config.NumberColumn("PTS/J", format="%.1f"),
+    "DELTA_PPG": st.column_config.NumberColumn("Delta vs Temp.", format="%+.1f"),
+    "RPG": st.column_config.NumberColumn("REB/J", format="%.1f"),
+    "APG": st.column_config.NumberColumn("AST/J", format="%.1f"),
+    "3PM": st.column_config.NumberColumn("3PM/J", format="%.1f"),
+    "3P%": st.column_config.NumberColumn("3P%", format="%.1f%%"),
+    "TS%": st.column_config.ProgressColumn("Eficiência (TS%)", format="%.1f%%", min_value=35, max_value=80),
+    "USG%": st.column_config.ProgressColumn("Volume (USG%)", format="%.1f%%", min_value=10, max_value=45),
+    "SPG": st.column_config.NumberColumn("Roubos/J", format="%.1f"),
+    "BPG": st.column_config.NumberColumn("Tocos/J", format="%.1f"),
+    "STOCKS": st.column_config.NumberColumn("Stocks (STL+BLK)", format="%.1f"),
+    "net_rating": st.column_config.NumberColumn("Net Rtg", format="%+.1f"),
+    "PLUS_MINUS_PG": st.column_config.NumberColumn("+/- por Jogo", format="%+.1f"),
+    "PIE%": st.column_config.ProgressColumn("Impacto (PIE)", format="%.1f%%", min_value=0, max_value=30)
 }
 
-aba_ataque, aba_defesa, aba_geral = st.tabs(["🎯 Melhores Ataques", "🛡️ Melhores Defensores", "⚡ Destaques Gerais"])
+aba_ataque, aba_defesa, aba_impacto, aba_clutch, aba_evolucao = st.tabs([
+    "🎯 Explosão Ofensiva", 
+    "🛡️ Muralhas Defensivas", 
+    "⚡ Impacto & Plus/Minus",
+    "🧊 Sangue Frio (Clutch)",
+    "📈 Evolução (10 Dias)"
+])
 
 with aba_ataque:
-    st.subheader("Motores Ofensivos em Alta")
-    st.markdown("Jogadores com a maior média de pontos (PPG) aliada à eficiência real de arremesso (TS%).")
-    # Multiplica por 100 para ficar no formato de % no gráfico
-    df_ataque = df_trends.copy()
-    df_ataque['TS_PCT'] = df_ataque['TS_PCT'] * 100 
-    
-    top_ataques = df_ataque.sort_values(by="PPG", ascending=False).head(15)
-    st.dataframe(top_ataques[['PLAYER_NAME', 'TEAM_ABBREVIATION', 'PPG', 'TS_PCT', 'NET_RATING']], 
-                 column_config=config_colunas, hide_index=True, use_container_width=True)
+    st.markdown("##### 🔥 Líderes de Pontuação e Evolução Recente")
+    df_atq = df_mom.sort_values(by=["PPG", "TS%"], ascending=[False, False]).head(25)
+    st.dataframe(
+        df_atq[['nome_completo', 'time_abrev', 'gp', 'MPG', 'PPG', 'DELTA_PPG', '3PM', '3P%', 'TS%', 'USG%']],
+        column_config=config_colunas, hide_index=True, use_container_width=True
+    )
 
 with aba_defesa:
-    st.subheader("Muralhas Recentes")
-    st.markdown("Especialistas defensivos que estão dominando em roubos e tocos nos últimos jogos.")
-    
-    # Soma roubos e tocos para achar os mais ativos na defesa
-    df_trends['STOCKS'] = df_trends['SPG'] + df_trends['BPG']
-    top_defesas = df_trends.sort_values(by="STOCKS", ascending=False).head(15)
-    st.dataframe(top_defesas[['PLAYER_NAME', 'TEAM_ABBREVIATION', 'SPG', 'BPG', 'NET_RATING']], 
-                 column_config=config_colunas, hide_index=True, use_container_width=True)
+    st.markdown("##### 🔒 Líderes em Disruptividade (Roubos + Tocos nos últimos 5 jogos)")
+    df_def = df_mom.sort_values(by=["STOCKS", "SPG", "BPG"], ascending=[False, False, False]).head(25)
+    st.dataframe(
+        df_def[['nome_completo', 'time_abrev', 'gp', 'MPG', 'STOCKS', 'SPG', 'BPG', 'RPG', 'net_rating']],
+        column_config=config_colunas, hide_index=True, use_container_width=True
+    )
 
-with aba_geral:
-    st.subheader("Jogadores de Maior Impacto Global")
-    st.markdown("Os 'Unicórnios' do momento: a métrica PIE (Player Impact Estimate) mostra quem mais domina todas as facetas do jogo.")
+with aba_impacto:
+    st.markdown("##### ⚡ Dominância Geral (PIE, Assistências e Saldo de Pontos)")
+    df_imp = df_mom.sort_values(by=["PIE%", "PLUS_MINUS_PG"], ascending=[False, False]).head(25)
+    st.dataframe(
+        df_imp[['nome_completo', 'time_abrev', 'gp', 'MPG', 'PIE%', 'PPG', 'RPG', 'APG', 'PLUS_MINUS_PG', 'net_rating']],
+        column_config=config_colunas, hide_index=True, use_container_width=True
+    )
+
+with aba_clutch:
+    st.markdown("##### 🧊 Decisivos no Final de Jogo (Últimos 5 min com placar até 5 pts na temporada 2026-27)")
+    if not df_clutch.empty:
+        df_cl = df_clutch.sort_values(by="clutch_pts", ascending=False).head(25)
+        st.dataframe(
+            df_cl[['nome_completo', 'clutch_pts', 'CLUTCH_FG%', 'CLUTCH_3P%', 'CLUTCH_USG%', 'clutch_net_rating']],
+            column_config={
+                "nome_completo": st.column_config.TextColumn("Atleta", width="medium"),
+                "clutch_pts": st.column_config.NumberColumn("Pontos Clutch", format="%.1f"),
+                "CLUTCH_FG%": st.column_config.ProgressColumn("FG% Clutch", format="%.1f%%", min_value=0, max_value=100),
+                "CLUTCH_3P%": st.column_config.NumberColumn("3P% Clutch", format="%.1f%%"),
+                "CLUTCH_USG%": st.column_config.ProgressColumn("USG% Clutch", format="%.1f%%", min_value=0, max_value=50),
+                "clutch_net_rating": st.column_config.NumberColumn("Saldo/Net Clutch", format="%+.1f")
+            },
+            hide_index=True, use_container_width=True
+        )
+    else:
+        st.info("Ainda não há registros de Clutch Time salvos para 2026-27.")
+
+# ==========================================
+# NOVA ABA: EVOLUÇÃO DE 10 DIAS (SNAPSHOTS)
+# ==========================================
+# Adicione esta aba na lista de abas lá no hot_streaks.py:
+# aba_ataque, aba_defesa, aba_impacto, aba_clutch, aba_evolucao = st.tabs([...])
+
+with aba_evolucao:
+    st.markdown("##### 📈 Evolução de Desempenho (Comparativo entre Ciclos de 10 Dias)")
+    st.caption("Isola o rendimento exato do jogador no último bloco de 10 dias comparado ao ciclo anterior.")
     
-    df_geral = df_trends.copy()
-    df_geral['PIE'] = df_geral['PIE'] * 100
+    from data.queries import obter_evolucao_snapshot_10dias
+    df_evol, data_ant, data_rec = obter_evolucao_snapshot_10dias(TEMPORADA_ATUAL)
     
-    top_gerais = df_geral.sort_values(by="PIE", ascending=False).head(15)
-    st.dataframe(top_gerais[['PLAYER_NAME', 'TEAM_ABBREVIATION', 'PIE', 'PPG', 'NET_RATING']], 
-                 column_config=config_colunas, hide_index=True, use_container_width=True)
+    if not df_evol.empty and data_ant and data_rec:
+        st.info(f"📅 Comparando o bloco de {data_ant} até {data_rec}")
+        
+        # Filtro rápido por jogador para analisar a evolução individual
+        jogadores_disp = df_evol['jogador_id'].tolist() # (O ideal aqui é juntar com o nome do jogador da tabela jogadores)
+        
+        # Exibe o ranking de quem mais pontuou estritamente nesse último bloco de 10 dias
+        if 'PPG_10D' in df_evol.columns:
+            df_top_10d = df_evol.sort_values(by="PPG_10D", ascending=False).head(20)
+            
+            # Gráfico de barras simples no Streamlit com os maiores pontuadores do período
+            st.bar_chart(df_top_10d.set_index('time_abrev')['PPG_10D'])
+    else:
+        st.warning("⚠️ Ainda aguardando o acúmulo de pelo menos 2 snapshots (intervalo de 10 dias) para gerar o comparativo visual.")
 
 ================================================================================
 ARQUIVO: .\utils\archetypes.py

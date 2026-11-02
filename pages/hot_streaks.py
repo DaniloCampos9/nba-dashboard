@@ -130,23 +130,59 @@ with aba_clutch:
 # aba_ataque, aba_defesa, aba_impacto, aba_clutch, aba_evolucao = st.tabs([...])
 
 with aba_evolucao:
-    st.markdown("##### 📈 Evolução de Desempenho (Comparativo entre Ciclos de 10 Dias)")
-    st.caption("Isola o rendimento exato do jogador no último bloco de 10 dias comparado ao ciclo anterior.")
+    st.markdown("##### 📈 Evolução dos Jogadores (Comparativo entre Ciclos de 10 Dias)")
+    st.caption("Isola o rendimento exato de cada atleta no último bloco de 10 dias e compara com a média que ele possuía no snapshot anterior.")
     
     from data.queries import obter_evolucao_snapshot_10dias
     df_evol, data_ant, data_rec = obter_evolucao_snapshot_10dias(TEMPORADA_ATUAL)
     
-    if not df_evol.empty and data_ant and data_rec:
-        st.info(f"📅 Comparando o bloco de {data_ant} até {data_rec}")
+    if not df_evol.empty and data_ant and data_rec and 'PPG_10D' in df_evol.columns:
+        st.info(f"📅 **Janela analisada:** produção exclusiva dos jogadores entre **{data_ant}** e **{data_rec}**")
         
-        # Filtro rápido por jogador para analisar a evolução individual
-        jogadores_disp = df_evol['jogador_id'].tolist() # (O ideal aqui é juntar com o nome do jogador da tabela jogadores)
-        
-        # Exibe o ranking de quem mais pontuou estritamente nesse último bloco de 10 dias
-        if 'PPG_10D' in df_evol.columns:
-            df_top_10d = df_evol.sort_values(by="PPG_10D", ascending=False).head(20)
+        col_f1, col_f2 = st.columns([1, 1])
+        with col_f1:
+            ordem_escolhida = st.radio(
+                "Ordenar jogadores por:",
+                ["Maior Evolução (Delta PPG)", "Maior Pontuação no Ciclo (PPG 10d)"],
+                horizontal=True
+            )
+        with col_f2:
+            times_disp = ["Todos"] + sorted(df_evol['time_abrev'].dropna().unique().tolist())
+            time_filtro = st.selectbox("Filtrar por Franquia:", times_disp)
             
-            # Gráfico de barras simples no Streamlit com os maiores pontuadores do período
-            st.bar_chart(df_top_10d.set_index('time_abrev')['PPG_10D'])
+        df_vis_10d = df_evol.copy()
+        if time_filtro != "Todos":
+            df_vis_10d = df_vis_10d[df_vis_10d['time_abrev'] == time_filtro]
+            
+        if ordem_escolhida == "Maior Evolução (Delta PPG)":
+            df_vis_10d = df_vis_10d.sort_values(by=["DELTA_PPG_10D", "PPG_10D"], ascending=[False, False])
+        else:
+            df_vis_10d = df_vis_10d.sort_values(by=["PPG_10D", "DELTA_PPG_10D"], ascending=[False, False])
+            
+        st.dataframe(
+            df_vis_10d[['nome_completo', 'time_abrev', 'jogos_10d', 'MPG_10D', 'PPG_ANT', 'PPG_10D', 'DELTA_PPG_10D', 'RPG_10D', 'APG_10D', '3PM_10D', '3P%_10D']].head(30),
+            column_config={
+                "nome_completo": st.column_config.TextColumn("Atleta", width="medium"),
+                "time_abrev": st.column_config.TextColumn("Time", width="small"),
+                "jogos_10d": st.column_config.NumberColumn("Jogos (10d)"),
+                "MPG_10D": st.column_config.NumberColumn("MIN/J", format="%.1f"),
+                "PPG_ANT": st.column_config.NumberColumn("PPG Anterior", format="%.1f"),
+                "PPG_10D": st.column_config.NumberColumn("PPG (10 Dias)", format="%.1f"),
+                "DELTA_PPG_10D": st.column_config.NumberColumn("Evolução (Delta)", format="%+.1f"),
+                "RPG_10D": st.column_config.NumberColumn("REB/J (10d)", format="%.1f"),
+                "APG_10D": st.column_config.NumberColumn("AST/J (10d)", format="%.1f"),
+                "3PM_10D": st.column_config.NumberColumn("3PM/J (10d)", format="%.1f"),
+                "3P%_10D": st.column_config.NumberColumn("3P% (10d)", format="%.1f%%")
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+        
+        st.markdown("##### 📊 Top 15 Jogadores no Período")
+        df_grafico_10d = df_vis_10d.head(15).set_index('nome_completo')
+        if ordem_escolhida == "Maior Evolução (Delta PPG)":
+            st.bar_chart(df_grafico_10d['DELTA_PPG_10D'])
+        else:
+            st.bar_chart(df_grafico_10d['PPG_10D'])
     else:
         st.warning("⚠️ Ainda aguardando o acúmulo de pelo menos 2 snapshots (intervalo de 10 dias) para gerar o comparativo visual.")
